@@ -5,12 +5,14 @@ Plataforma de gestão de pausas integrada ao Pulse Direct. O atendente controla 
 **Stack:** Node.js + Express (função serverless na Vercel) · Postgres (Supabase) · frontend em JS puro (`public/`).
 
 ## Como funciona
-| Ação do atendente | Status enviado ao Pulse Direct | Registro |
+| Ação do atendente | Disponibilidade no Pulse Direct | Registro |
 |---|---|---|
-| Iniciar jornada | `Active` | começa o tempo ativo |
-| Pausar (com motivo) | `Blocked` | fecha o tempo ativo, abre a pausa |
-| Retomar atendimento | `Active` | fecha a pausa, abre o tempo ativo |
-| Encerrar jornada | `OFFLINE_STATUS` (padrão `Blocked`) | fecha o período atual |
+| Iniciar jornada |  | começa o tempo ativo |
+| Pausar (com motivo) |  | fecha o tempo ativo, abre a pausa |
+| Retomar atendimento |  | fecha a pausa, abre o tempo ativo |
+| Encerrar jornada |  | fecha o período atual |
+
+A plataforma altera **apenas a disponibilidade** ( com ). Ela nunca bloqueia o usuário, então o login no Pulse Direct continua funcionando. Mudanças de disponibilidade feitas direto no Pulse Direct também aparecem na plataforma.
 
 - **Acesso:** o atendente digita o e-mail do Pulse Direct e, no primeiro acesso, cria a senha.
 - **Papéis:** `Usuário` vê só os próprios dados. `Admin` tem visão de equipe em tempo real, relatórios (com CSV), motivos de pausa e usuários.

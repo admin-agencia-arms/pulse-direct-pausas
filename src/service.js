@@ -2,7 +2,6 @@ import { sql, audit, getMeta, setMeta } from './db.js';
 import * as crm from './crm.js';
 import { normEmail } from './auth.js';
 
-const OFFLINE_STATUS = process.env.OFFLINE_STATUS === 'Active' ? 'Active' : 'Blocked';
 const SYNC_MS = Math.max(1, Number(process.env.SYNC_MINUTES || 10)) * 60_000;
 
 export const httpErr = (status, message) => Object.assign(new Error(message), { status });
@@ -31,11 +30,11 @@ async function locked(user, fn) {
   }
 }
 
-async function pushStatus(user, status) {
+async function pushStatus(user, availability) {
   try {
-    await crm.setAgentStatus(user, status);
+    await crm.setAvailability(user, availability);
   } catch (e) {
-    throw httpErr(502, `Não foi possível alterar o status no Pulse Direct: ${e.message}`);
+    throw httpErr(502, `Não foi possível alterar a disponibilidade no Pulse Direct: ${e.message}`);
   }
 }
 
@@ -46,7 +45,7 @@ const closeIt = (q, id, t, actorId) => q`UPDATE intervals SET ended_at = ${t}, e
 
 export const startShift = (user, actorId) => locked(user, async () => {
   if (await openInterval(user.id)) throw httpErr(409, 'A jornada já está iniciada.');
-  await pushStatus(user, 'Active');
+  await pushStatus(user, 'AVAILABLE');
   await openNew(sql, user.id, 'active', null, null, Date.now(), actorId);
   await audit(actorId, user.id, 'start_shift');
 });
@@ -59,7 +58,7 @@ export const startPause = (user, reasonId, note, actorId) => locked(user, async 
   const [reason] = Number.isInteger(id) ? await sql`SELECT * FROM pause_reasons WHERE id = ${id} AND active` : [];
   if (!reason) throw httpErr(400, 'Selecione um motivo de pausa válido.');
   const cleanNote = note ? String(note).trim().slice(0, 300) || null : null;
-  await pushStatus(user, 'Blocked');
+  await pushStatus(user, 'UNAVAILABLE');
   const t = Date.now();
   await sql.begin(async (q) => {
     await closeIt(q, cur.id, t, actorId);
@@ -71,7 +70,7 @@ export const startPause = (user, reasonId, note, actorId) => locked(user, async 
 export const endPause = (user, actorId) => locked(user, async () => {
   const cur = await openInterval(user.id);
   if (!cur || cur.kind !== 'pause') throw httpErr(409, 'Não há pausa em andamento.');
-  await pushStatus(user, 'Active');
+  await pushStatus(user, 'AVAILABLE');
   const t = Date.now();
   await sql.begin(async (q) => {
     await closeIt(q, cur.id, t, actorId);
@@ -83,7 +82,7 @@ export const endPause = (user, actorId) => locked(user, async () => {
 export const endShift = (user, actorId) => locked(user, async () => {
   const cur = await openInterval(user.id);
   if (!cur) throw httpErr(409, 'A jornada não está iniciada.');
-  await pushStatus(user, OFFLINE_STATUS);
+  await pushStatus(user, 'UNAVAILABLE');
   await closeIt(sql, cur.id, Date.now(), actorId);
   await audit(actorId, user.id, 'end_shift');
 });

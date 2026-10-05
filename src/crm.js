@@ -41,15 +41,19 @@ export const listAgents = () => call('GET', '/v1/agent');
 export const listDepartments = () => call('GET', '/v2/department');
 export const getAgent = (userId) => call('GET', `/v1/agent/${userId}`);
 
-/** status: 'Active' | 'Blocked' */
-export async function setAgentStatus(user, status) {
+/**
+ * Altera apenas a disponibilidade do atendente ('AVAILABLE' | 'UNAVAILABLE').
+ * Nunca altera o status (Active/Blocked): bloquear impediria o login no Pulse Direct.
+ */
+export async function setAvailability(user, availability) {
   if (DRY_RUN) return { dryRun: true };
+  const body = { availability, fields: ['Availability'] };
   // O {id} desta rota é o userId do atendente; tenta o id do agente como alternativa.
   try {
-    return await call('POST', `/v1/agent/${user.crm_user_id}/status`, { status });
+    return await call('PUT', `/v1/agent/${user.crm_user_id}`, body);
   } catch (e) {
     if (e.key === 'ENTITY_NOT_FOUND' && user.crm_agent_id && user.crm_agent_id !== user.crm_user_id) {
-      return call('POST', `/v1/agent/${user.crm_agent_id}/status`, { status });
+      return call('PUT', `/v1/agent/${user.crm_agent_id}`, body);
     }
     throw e;
   }
