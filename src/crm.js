@@ -39,6 +39,7 @@ async function call(method, path, body) {
 
 export const listAgents = () => call('GET', '/v1/agent');
 export const listDepartments = () => call('GET', '/v2/department');
+export const getAgent = (userId) => call('GET', `/v1/agent/${userId}`);
 
 /** status: 'Active' | 'Blocked' */
 export async function setAgentStatus(user, status) {

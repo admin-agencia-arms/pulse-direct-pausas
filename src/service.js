@@ -100,19 +100,100 @@ export function syncUsers() {
   return syncing;
 }
 
-/** Sincroniza se a última sincronização for mais antiga que SYNC_MINUTES. Nunca lança erro. */
-export async function syncIfStale() {
+/** Sincroniza se a última sincronização for mais antiga que maxAge (padrão SYNC_MINUTES). Nunca lança erro. */
+export async function syncIfStale(maxAge = SYNC_MS) {
   try {
     const last = Number(await getMeta('last_sync')) || 0;
-    if (Date.now() - last > SYNC_MS) await syncUsers();
+    if (Date.now() - last > maxAge) await syncUsers();
   } catch (e) {
     console.error('[sync] falhou:', e.message);
+  }
+}
+
+// ---------- Reconciliação com a disponibilidade no Pulse Direct ----------
+// O Pulse Direct é a fonte da verdade sobre a disponibilidade. Se o atendente ficou
+// disponível/indisponível por fora da plataforma, ajustamos os períodos aqui.
+
+const SETTLE_MS = 5_000;
+const CRM_GRACE_MS = 30_000;
+
+/** Horário da mudança informado pelo Pulse Direct (updatedAt), se for plausível; senão, agora. */
+function changeTime(agent, after, now) {
+  const ts = Date.parse(agent.updatedAt || '');
+  return Number.isFinite(ts) && ts > after && ts < now ? ts : now;
+}
+
+export async function reconcile(agents, fetchedAt) {
+  const list = agents.filter((a) => a?.userId && a.availability);
+  if (!list.length) return { changed: 0 };
+  const byCrm = new Map(list.map((a) => [a.userId, a]));
+  const users = await sql`
+    SELECT u.id, u.crm_user_id, u.busy_until,
+      (SELECT row_to_json(i) FROM intervals i WHERE i.user_id = u.id AND i.ended_at IS NULL LIMIT 1) AS open,
+      (SELECT MAX(GREATEST(i.started_at, COALESCE(i.ended_at, 0))) FROM intervals i WHERE i.user_id = u.id) AS last_change
+    FROM users u WHERE u.active AND u.crm_user_id = ANY(${[...byCrm.keys()]}::text[])`;
+
+  const now = Date.now();
+  await sql`UPDATE users SET crm_availability = v.av, crm_checked_at = ${now}
+    FROM (SELECT unnest(${users.map((u) => u.id)}::int[]) AS id, unnest(${users.map((u) => byCrm.get(u.crm_user_id).availability)}::text[]) AS av) v
+    WHERE users.id = v.id`;
+
+  const todayStart = now - ((now + Number(process.env.TZ_OFFSET_MINUTES ?? -180) * 60_000) % 86_400_000);
+  let changed = 0;
+  for (const u of users) {
+    const a = byCrm.get(u.crm_user_id);
+    const available = a.availability === 'AVAILABLE';
+    const open = u.open;
+    const last = Number(u.last_change) || 0;
+    // não mexe em quem está com uma ação em andamento ou mudou depois da leitura do Pulse Direct
+    if ((u.busy_until && u.busy_until > now) || last > fetchedAt - SETTLE_MS) continue;
+    // só ajusta se a mudança no Pulse Direct for posterior à última ação feita aqui
+    // (evita desfazer uma pausa/jornada que o Pulse Direct ainda não refletiu)
+    const crmTs = Date.parse(a.updatedAt || '');
+    if (last && !(crmTs > last + CRM_GRACE_MS)) continue;
+    try {
+      if (available && !open) {
+        const t = changeTime(a, Math.max(last, todayStart), now);
+        await openNew(sql, u.id, 'active', null, null, t, null);
+        await audit(null, u.id, 'crm_available', { at: t });
+        changed++;
+      } else if (available && open?.kind === 'pause') {
+        const t = changeTime(a, open.started_at, now);
+        await sql.begin(async (q) => {
+          await closeIt(q, open.id, t, null);
+          await openNew(q, u.id, 'active', null, null, t, null);
+        });
+        await audit(null, u.id, 'crm_available', { at: t, closedPause: open.reason_name });
+        changed++;
+      } else if (!available && open?.kind === 'active') {
+        const t = changeTime(a, open.started_at, now);
+        await closeIt(sql, open.id, t, null);
+        await audit(null, u.id, 'crm_unavailable', { at: t });
+        changed++;
+      }
+    } catch (e) {
+      console.error('[reconcile]', u.id, e.message);
+    }
+  }
+  return { changed };
+}
+
+/** Verifica um único atendente no Pulse Direct (usado pelo painel do próprio atendente). */
+export async function reconcileUser(user, maxAge = 60_000) {
+  if (!user.crm_user_id || Date.now() - (Number(user.crm_checked_at) || 0) < maxAge) return;
+  try {
+    const fetchedAt = Date.now();
+    const agent = await crm.getAgent(user.crm_user_id);
+    await reconcile([agent], fetchedAt);
+  } catch (e) {
+    console.error('[reconcile] falhou:', e.message);
   }
 }
 
 const sameArr = (a, b) => (a || []).join(',') === (b || []).join(',');
 
 async function doSync() {
+  const fetchedAt = Date.now();
   const [agents, departments] = await Promise.all([
     crm.listAgents(),
     crm.listDepartments().catch(() => []),
@@ -179,8 +260,9 @@ async function doSync() {
   });
 
   await ensureAdmins(t);
+  const { changed } = await reconcile(agents, fetchedAt);
   await setMeta('last_sync', t);
-  return { ...stats, at: t };
+  return { ...stats, statusAdjusted: changed, at: t };
 }
 
 export async function ensureAdmins(t = Date.now()) {

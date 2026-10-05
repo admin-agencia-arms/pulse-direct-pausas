@@ -122,6 +122,7 @@ async function shiftStart(userId, cur) {
 }
 
 api.get('/me', wrap(async (req, res) => {
+  await svc.reconcileUser(req.user);
   const { state, current } = await svc.stateOf(req.user.id);
   const fromTs = dayStart(todayKey());
   const [ivs, reasons, shift] = await Promise.all([
@@ -190,7 +191,8 @@ admin.get('/departments', wrap(async (req, res) => {
 }));
 
 admin.get('/team', wrap(async (req, res) => {
-  await svc.syncIfStale();
+  // visão em tempo real: relê a disponibilidade no Pulse Direct a cada 30s
+  await svc.syncIfStale(30_000);
   const fromTs = dayStart(todayKey());
   const [users, ivs, departments, recent] = await Promise.all([
     sql`SELECT * FROM users WHERE active AND crm_user_id IS NOT NULL ORDER BY name`,
