@@ -1,18 +1,18 @@
 # Pulse Direct · Gestão de Pausas
 
-Plataforma de gestão de pausas integrada ao Pulse Direct. O atendente controla a própria disponibilidade (jornada e pausas com motivo). O status muda na hora no Pulse Direct, e o tempo de pausa e de atividade fica registrado por dia.
+Plataforma de gestão de pausas integrada ao Pulse Direct. O atendente controla a própria disponibilidade (jornada e pausas com motivo). A disponibilidade muda na hora no Pulse Direct, e o tempo de pausa e de atividade fica registrado por dia.
 
 **Stack:** Node.js + Express (função serverless na Vercel) · Postgres (Supabase) · frontend em JS puro (`public/`).
 
 ## Como funciona
 | Ação do atendente | Disponibilidade no Pulse Direct | Registro |
 |---|---|---|
-| Iniciar jornada |  | começa o tempo ativo |
-| Pausar (com motivo) |  | fecha o tempo ativo, abre a pausa |
-| Retomar atendimento |  | fecha a pausa, abre o tempo ativo |
-| Encerrar jornada |  | fecha o período atual |
+| Iniciar jornada | `AVAILABLE` | começa o tempo ativo |
+| Pausar (com motivo) | `UNAVAILABLE` | fecha o tempo ativo, abre a pausa |
+| Retomar atendimento | `AVAILABLE` | fecha a pausa, abre o tempo ativo |
+| Encerrar jornada | `UNAVAILABLE` | fecha o período atual |
 
-A plataforma altera **apenas a disponibilidade** ( com ). Ela nunca bloqueia o usuário, então o login no Pulse Direct continua funcionando. Mudanças de disponibilidade feitas direto no Pulse Direct também aparecem na plataforma.
+A plataforma altera **apenas a disponibilidade** (`PUT /v1/agent/{userId}` com `fields: ["Availability"]`). Ela nunca bloqueia o usuário, então o login no Pulse Direct continua funcionando. Mudanças de disponibilidade feitas direto no Pulse Direct também aparecem na plataforma.
 
 - **Acesso:** o atendente digita o e-mail do Pulse Direct e, no primeiro acesso, cria a senha.
 - **Papéis:** `Usuário` vê só os próprios dados. `Admin` tem visão de equipe em tempo real, relatórios (com CSV), motivos de pausa e usuários.
