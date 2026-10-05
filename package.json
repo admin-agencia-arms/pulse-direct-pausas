@@ -1,0 +1,20 @@
+{
+  "name": "pulse-direct-pausas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pulse Direct — Gestão de Pausas",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/dev.js",
+    "dev": "node --env-file=.env --watch src/dev.js",
+    "admin": "node --env-file=.env src/make-admin.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2",
+    "postgres": "^3.4.9"
+  }
+}
