@@ -216,6 +216,20 @@ rotasAdmin.put('/atendentes/:userId/equipes', wrap(async (req, res) => {
   res.json({ ok: true, ...r });
 }));
 
+rotasAdmin.put('/equipes/:id/membros', wrap(async (req, res) => {
+  const lista = (v) => (Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : []);
+  const adicionar = lista(req.body?.adicionar);
+  const remover = lista(req.body?.remover);
+  if (!adicionar.length && !remover.length) return res.status(400).json({ error: 'Nada para mudar.' });
+  if (adicionar.length + remover.length > 100) return res.status(400).json({ error: 'No máximo 100 pessoas por vez.' });
+  const d = distribuidor();
+  const r = await d.mudarMembrosDaEquipe(req.params.id, { adicionar, remover }, nomeAtor(req.user)).catch((e) => { throw legivel(e); });
+  await audit(req.user.id, null, 'distribuicao_membros_equipe', { equipeId: req.params.id, adicionar, remover, falhas: r.falhas });
+  await cicloAposMudanca(d);
+  if (r.falhas.length && !r.feitas) return res.status(502).json({ error: `Não deu para mudar os membros: ${r.falhas.join('; ')}` });
+  res.json({ ok: true, ...r });
+}));
+
 rotasAdmin.post('/eventos', wrap(async (req, res) => {
   const segredo = process.env.DISTRIBUICAO_SEGREDO || '';
   if (!segredo) return res.status(400).json({ error: 'Defina DISTRIBUICAO_SEGREDO na configuração do servidor antes de ligar os eventos.' });

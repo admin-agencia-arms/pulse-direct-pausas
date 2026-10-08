@@ -351,7 +351,7 @@ export class Distribuidor {
   }
 
   /** Equipes que o sistema distribui (incluídas pelo admin, com atendente humano), e avisos. */
-  calcularGerenciadas(st, cargaPorAtendente, fila) {
+  calcularGerenciadas(st, fila) {
     const avisos = [];
     const comHumano = new Set(st.atendentes.flatMap((a) => a.equipes));
     const incluidas = Object.entries(st.config.equipes).filter(([, v]) => v).map(([id]) => id);
@@ -363,22 +363,19 @@ export class Distribuidor {
       else if (!comHumano.has(id)) avisos.push({ chave: `equipe_sem_humano:${id}`, texto: `${e.nome} está incluída na distribuição, mas não tem nenhum atendente.` });
       else alvo.push(e);
     }
-    if (!incluidas.length) avisos.push({ chave: 'nenhuma_equipe', texto: 'Nenhuma equipe incluída na distribuição automática ainda. Inclua na aba Equipes (botão Configurar).' });
+    if (!incluidas.length) avisos.push({ chave: 'nenhuma_equipe', texto: 'Nenhuma equipe incluída na distribuição automática ainda. Inclua na aba Equipes (botão Gerenciar).' });
     const comNativa = alvo.filter((e) => e.distribuicaoNativa).map((e) => e.nome);
     if (comNativa.length) {
       avisos.push({
         chave: 'distribuicao_nativa',
         texto: st.config.ligado
-          ? `${comNativa.join(', ')}: a distribuição do próprio Pulse Direct está ligada; o sistema não mexe nessa(s) equipe(s) até ela ser desligada (botão Configurar).`
-          : `${comNativa.join(', ')}: a distribuição do próprio Pulse Direct está ligada; com ela ligada a fila fica vazia (desligue em Configurar antes de ligar a distribuição automática).`,
+          ? `${comNativa.join(', ')}: a distribuição do próprio Pulse Direct está ligada; o sistema não mexe nessa(s) equipe(s) até ela ser desligada (aba Equipes › Gerenciar).`
+          : `${comNativa.join(', ')}: a distribuição do próprio Pulse Direct está ligada; com ela ligada a fila fica vazia (desligue em Equipes › Gerenciar antes de ligar a distribuição automática).`,
       });
     }
     if (st.config.ligado) alvo = alvo.filter((e) => !e.distribuicaoNativa);
     st.gerenciadas = alvo.map((e) => e.id);
 
-    const conhecidos = new Set(st.atendentes.map((a) => a.userId));
-    const orfas = [...cargaPorAtendente.entries()].filter(([u]) => !conhecidos.has(u)).reduce((s, [, c]) => s + c.total, 0);
-    if (orfas) avisos.push({ chave: 'orfas', texto: `${orfas} conversa(s) abertas com usuário que não existe mais no Pulse Direct. Ninguém vê essas conversas.` });
     if (st.divergencia) avisos.push({ chave: 'leitura_divergente', texto: st.divergencia });
     if (st.ausentesDemais) avisos.push({ chave: 'ausentes', texto: `A releitura achou ${st.ausentesDemais} conversas fora de sincronia (corrige ${MAX_AUSENTES} por vez).` });
 
@@ -438,7 +435,7 @@ export class Distribuidor {
     const agora = this.agora();
     const cargaPorAtendente = await this.cargaPorAtendente();
     const fila = (await this.estado.fila()).map((r) => ({ id: r.id, equipeId: r.equipe_id, criadaEm: r.criada_em ?? 0 }));
-    const { ids: gerenciadas, avisos } = this.calcularGerenciadas(st, cargaPorAtendente, fila);
+    const { ids: gerenciadas, avisos } = this.calcularGerenciadas(st, fila);
     for (const [chave, ate] of Object.entries(st.bloqueios)) if (ate <= agora) delete st.bloqueios[chave];
     const ultimaEntrega = st.config.ligado ? await this.estado.ultimasEntregas(agora - 86_400_000) : new Map();
 
@@ -758,6 +755,37 @@ export class Distribuidor {
     }
   }
 
+  /** Colocar e tirar várias pessoas de UMA equipe de uma vez (escreve no Pulse Direct, uma chamada por pessoa). */
+  async mudarMembrosDaEquipe(equipeId, { adicionar = [], remover = [] }, ator) {
+    const pendentes = [];
+    const pulse = await this.novoPulse(false, pendentes);
+    try {
+      const equipe = (await this.equipesAtuais(pulse)).find((e) => e.id === equipeId);
+      if (!equipe) throw Object.assign(new Error('Equipe não encontrada no Pulse Direct.'), { status: 400 });
+      if (adicionar.some((u) => remover.includes(u))) throw Object.assign(new Error('A mesma pessoa está para colocar e tirar.'), { status: 400 });
+      const { atendentes } = await this.estado.lerEstado(['atendentes']);
+      const nomes = new Map((atendentes ?? []).map((a) => [a.userId, a.nome]));
+      for (const u of [...adicionar, ...remover]) {
+        if (!nomes.has(u)) throw Object.assign(new Error('Usuário não encontrado no Pulse Direct.'), { status: 400 });
+      }
+      const colocados = [], tirados = [], falhas = [];
+      for (const u of remover) {
+        try { await pulse.removerDaEquipe(equipeId, u); tirados.push(nomes.get(u)); } catch (e) { falhas.push(`${nomes.get(u)}: ${msg(e)}`); }
+      }
+      for (const u of adicionar) {
+        try { await pulse.incluirNaEquipe(equipeId, u); colocados.push(nomes.get(u)); } catch (e) { falhas.push(`${nomes.get(u)}: ${msg(e)}`); }
+      }
+      const partes = [];
+      if (colocados.length) partes.push(`colocou ${colocados.join(', ')} em ${equipe.nome}`);
+      if (tirados.length) partes.push(`tirou ${tirados.join(', ')} de ${equipe.nome}`);
+      if (partes.length) await this.log.info('gestao_equipe', `${ator} ${partes.join(' e ')}.`, { equipeId });
+      if (falhas.length) await this.log.erro('gestao_equipe_falhou', `Falha ao mudar os membros de ${equipe.nome}: ${falhas.join('; ')}`, { equipeId });
+      return { feitas: colocados.length + tirados.length, falhas };
+    } finally {
+      await Promise.allSettled(pendentes);
+    }
+  }
+
   /** Cria (se ainda não existir) a assinatura de eventos de conversa no Pulse Direct apontando para este sistema. */
   async configurarEventos(urlEvento, ator) {
     const pendentes = [];
@@ -859,6 +887,8 @@ export class Distribuidor {
       },
       atendentes,
       equipes,
+      // todos os usuários do Pulse Direct (inclusive sem equipe), para colocar em equipe pela tela
+      usuarios: st.atendentes.map((a) => ({ userId: a.userId, nome: a.nome, email: a.email ?? null, online: a.disponivel })),
     };
   }
 }

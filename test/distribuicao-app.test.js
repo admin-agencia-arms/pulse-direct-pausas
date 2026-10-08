@@ -63,6 +63,7 @@ caso('só administrador acessa: sem login 401, usuário comum 403', async () => 
   const cookie = await entrar(USUARIO);
   assert.equal((await chamar(cookie, '/admin/distribuicao')).status, 403);
   assert.equal((await chamar(cookie, '/admin/distribuicao/ligar', { method: 'POST', body: { ligado: true } })).status, 403);
+  assert.equal((await chamar(cookie, '/admin/distribuicao/equipes/A/membros', { method: 'PUT', body: { adicionar: ['bia'] } })).status, 403);
 });
 
 caso('painel do admin: lê o Pulse Direct, mostra abertos por equipe e começa DESLIGADO', async () => {
@@ -101,6 +102,25 @@ caso('ações do admin: incluir equipe, mudar equipes de alguém, ligar/desligar
   assert.deepEqual(acoes, ['distribuicao_equipe', 'distribuicao_equipes_atendente', 'distribuicao_ligar', 'distribuicao_ligar']);
   const reg = await (await chamar(cookie, '/admin/distribuicao/registro?categoria=pessoas')).json();
   assert.ok(reg.some((i) => /colocou .* em Cirurgia/.test(i.mensagem)));
+});
+
+caso('membros da equipe: colocar e tirar várias pessoas de uma vez (com auditoria)', async () => {
+  const r0 = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: ADMIN, password: 'senha12345' }) });
+  const cookie = r0.headers.get('set-cookie').split(';')[0];
+  const antes = (await chamar(cookie, '/admin/distribuicao').then((r) => r.json()));
+  assert.ok(antes.usuarios.some((u) => u.userId === 'ana'), 'painel traz todos os usuários');
+  let r = await chamar(cookie, '/admin/distribuicao/equipes/B/membros', { method: 'PUT', body: { adicionar: ['ana', 'bia'], remover: [] } });
+  assert.equal(r.status, 200);
+  assert.ok(pulse.agentes.get('ana').equipes.includes('B') && pulse.agentes.get('bia').equipes.includes('B'));
+  r = await chamar(cookie, '/admin/distribuicao/equipes/B/membros', { method: 'PUT', body: { remover: ['ana'] } });
+  assert.equal(r.status, 200);
+  assert.ok(!pulse.agentes.get('ana').equipes.includes('B'));
+  r = await chamar(cookie, '/admin/distribuicao/equipes/B/membros', { method: 'PUT', body: {} });
+  assert.equal(r.status, 400);
+  r = await chamar(cookie, '/admin/distribuicao/equipes/B/membros', { method: 'PUT', body: { adicionar: ['ninguem'] } });
+  assert.equal(r.status, 400);
+  const n = await sql`SELECT count(*)::int AS n FROM audit WHERE action = 'distribuicao_membros_equipe'`;
+  assert.equal(n[0].n, 2);
 });
 
 caso('planilha: BOM, ponto e vírgula e nome com fórmula neutralizado', async () => {
