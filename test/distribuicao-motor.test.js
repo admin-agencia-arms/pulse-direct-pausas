@@ -214,7 +214,8 @@ caso('eventos em rajada: um só fica responsável e roda o ciclo quando o interv
   const c = await cenario({
     configurar: base,
     agora: () => Date.now() + deslocamento,
-    dormir: async (ms) => { dormidas.push(ms); deslocamento += ms; },
+    // cede a vez de verdade: com a espera instantânea a 1ª chamada solta a trava antes das outras chegarem
+    dormir: async (ms) => { dormidas.push(ms); deslocamento += ms; await new Promise((r) => setTimeout(r, 300)); },
   });
   try {
     await c.d.ciclo({ origem: 'manual' });
