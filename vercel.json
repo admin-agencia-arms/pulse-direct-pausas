@@ -4,8 +4,11 @@
   "outputDirectory": "public",
   "regions": ["gru1"],
   "functions": {
-    "api/index.js": { "maxDuration": 30 }
+    "api/index.js": { "maxDuration": 30, "includeFiles": "db/distribuicao.sql" }
   },
-  "rewrites": [{ "source": "/api/(.*)", "destination": "/api" }],
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/distribui(.*)", "destination": "/index.html" }
+  ],
   "crons": [{ "path": "/api/cron/sync", "schedule": "0 9 * * *" }]
 }
