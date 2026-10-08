@@ -219,7 +219,7 @@ function shell(active) {
   const isAdmin = u.role === 'admin';
   const links = [
     ...(u.isAgent ? [['/', 'Meu painel']] : []),
-    ...(isAdmin ? [['/equipe', 'Equipe'], ['/relatorios', 'Relatórios'], ['/motivos', 'Motivos de pausa'], ['/usuarios', 'Usuários']] : []),
+    ...(isAdmin ? [['/equipe', 'Equipe'], ['/relatorios', 'Relatórios'], ['/motivos', 'Motivos de pausa'], ['/usuarios', 'Usuários'], ['/distribuicao', 'Distribuição']] : []),
   ];
   $app.innerHTML = `
     <header class="topbar"><div class="topbar-inner">
@@ -811,7 +811,7 @@ async function viewUsers(page) {
   });
 }
 
-// ---------------- Distribuição automática (admin, fora do menu: /distribuicao) ----------------
+// ---------------- Distribuição automática (só admin: /distribuicao) ----------------
 const haQuanto = (ts) => {
   if (!ts) return '—';
   const s = Math.max(0, Math.round((now() - ts) / 1000));
@@ -1262,7 +1262,7 @@ async function viewDistribuicao(page) {
 
 // ---------------- Roteamento ----------------
 const ROUTES = { '/': viewMe, '/equipe': viewTeam, '/relatorios': viewReports, '/motivos': viewReasons, '/usuarios': viewUsers, '/distribuicao': viewDistribuicao };
-// /distribuicao fica fora do menu: só quem tem o endereço chega lá (e só admin)
+// abas de gestão: só admin
 const ADMIN_ONLY = new Set(['/equipe', '/relatorios', '/motivos', '/usuarios', '/distribuicao']);
 
 async function route() {
