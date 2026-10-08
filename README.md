@@ -45,15 +45,15 @@ Sobe **desligada**: só simula, e a aba Registro mostra o que faria.
 
 | Aba | O que tem |
 |---|---|
-| Atendentes | abertos por equipe, vagas, concluídos hoje, planilha · botão **Equipes**: incluir, tirar ou trocar a pessoa de equipe no Pulse Direct |
-| Equipes | fila, espera mais antiga, quem distribui · **Configurar**: nome, incluir na distribuição, distribuição do próprio Pulse Direct |
+| Atendentes | abertos por equipe, vagas, concluídos hoje, planilha · botão **Editar equipes** por pessoa · marcar várias pessoas e colocar ou tirar de uma equipe de uma vez · clicar numa equipe filtra a lista |
+| Equipes | fila, espera mais antiga, quem distribui · **Gerenciar**: pessoas da equipe (colocar e tirar várias de uma vez), nome, incluir na distribuição, distribuição do próprio Pulse Direct |
 | Registro | entregas, mudanças de pessoas e equipes, avisos e erros |
 
 **Para ligar:**
 1. Rode `db/distribuicao.sql` com o dono do banco (depois do `schema.sql`).
 2. Defina `DISTRIBUICAO_SEGREDO` na Vercel (opcionais: `PULSE_CHAT_API_URL`, `DISTRIBUICAO_ORCAMENTO_5MIN`).
 3. Na tela, **Ligar eventos do Pulse Direct**: cada conversa nova, atualizada ou encerrada dispara um ciclo, sem ninguém com a tela aberta. Opcional: agendador chamando `GET /api/distribuicao/ciclo` com `Authorization: Bearer <CRON_SECRET>`.
-4. Em **Equipes › Configurar**, inclua a equipe e desligue nela a distribuição do próprio Pulse Direct.
+4. Em **Equipes › Gerenciar › Configuração**, inclua a equipe e desligue nela a distribuição do próprio Pulse Direct.
 5. **Ligar distribuição automática.** Desligar volta a só simular.
 
 Cada entrega confere a conversa e a contagem do atendente no Pulse Direct na hora, e uma escrita nunca é repetida. Pessoas, equipes e quem está online vêm direto do Pulse Direct (relidos a cada poucos segundos), sem cadastro paralelo.

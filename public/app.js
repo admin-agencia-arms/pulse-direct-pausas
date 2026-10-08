@@ -830,7 +830,10 @@ const QUEM_DISTRIBUI = {
 
 async function viewDistribuicao(page) {
   const V = (S.dist ??= { aba: 'atendentes', q: '', dep: '', sit: '', reg: '' });
+  V.sel ??= new Set(); // atendentes marcados para ação em massa
   let data = null;
+  page.classList.add('wide');
+  document.querySelector('.topbar-inner')?.classList.add('wide');
   page.innerHTML = `
     <div class="page-head"><div><h1>Distribuição automática</h1>
       <p>Cada atendente com até <b id="d-teto">15</b> conversas abertas, puxando da fila das equipes dele.</p></div>
@@ -886,7 +889,7 @@ async function viewDistribuicao(page) {
         + kpi('Online acima do teto', r.onlineAcimaDoTeto, r.onlineAcimaDoTeto ? 'danger' : '')
         + kpi('Concluídos hoje', d.concluidasCarregadas ? r.concluidasHoje : '<small class="muted">carregando…</small>');
     page.querySelector('#d-regra').textContent = `Regra: a conversa mais antiga da fila vai para o atendente online daquela equipe com mais vagas (empate: quem recebeu há mais tempo). `
-      + `Contam como abertas as pendentes e as em atendimento, até o atendente finalizar. Ninguém recebe acima de ${d.config.teto}. Só equipes incluídas (aba Equipes › Configurar) são distribuídas.`;
+      + `Contam como abertas as pendentes e as em atendimento, até o atendente finalizar. Ninguém recebe acima de ${d.config.teto}. Só equipes incluídas (aba Equipes › Gerenciar › Configuração) são distribuídas.`;
     page.querySelector('#d-ligar').onclick = (e) => alternar(e.currentTarget);
     page.querySelector('#d-eventos')?.addEventListener('click', async (e) => {
       if (!(await confirmDialog('Ligar eventos do Pulse Direct', 'O Pulse Direct passa a avisar este sistema a cada conversa nova, atualizada ou encerrada. É o que faz a distribuição rodar sem ninguém com esta tela aberta.', 'Ligar eventos'))) return;
@@ -900,60 +903,132 @@ async function viewDistribuicao(page) {
     const ok = ligar
       ? await confirmDialog('Ligar distribuição automática?', n
         ? `A partir de agora o sistema <b>atribui conversas de verdade</b> no Pulse Direct, nas ${n} equipe(s) incluída(s), até ${data.config.teto} abertas por atendente. Cada entrega é conferida na hora. Para voltar a só simular, é só desligar.`
-        : 'Nenhuma equipe está incluída ainda: ligada, ela não entrega nada até você incluir uma equipe (aba Equipes › Configurar).', 'Ligar distribuição', 'primary')
+        : 'Nenhuma equipe está incluída ainda: ligada, ela não entrega nada até você incluir uma equipe (aba Equipes › Gerenciar › Configuração).', 'Ligar distribuição', 'primary')
       : await confirmDialog('Desligar distribuição automática?', 'O sistema para de atribuir conversas e volta a só simular.', 'Desligar', 'primary');
     if (!ok) return;
     try { await busy(btn, () => api('/admin/distribuicao/ligar', { method: 'POST', body: { ligado: ligar } })); toast(ligar ? 'Distribuição ligada.' : 'Distribuição desligada.', 'ok'); await load(); } catch (err) { toast(err.message, 'error'); }
   };
 
   // ---- aba Atendentes ----
+  const opcoesEquipes = (sel = '') => [...data.equipes].sort((a, b) => a.nome.localeCompare(b.nome))
+    .map((e) => `<option value="${esc(e.id)}" ${sel === e.id ? 'selected' : ''}>${esc(e.nome)}</option>`).join('');
+
   const drawAtendentes = (corpo) => {
     const d = data;
-    const deps = [...new Map(d.atendentes.flatMap((a) => a.equipes.map((e) => [e.id, e.nome]))).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    const conhecidos = new Set(d.atendentes.map((a) => a.userId));
+    for (const u of V.sel) if (!conhecidos.has(u)) V.sel.delete(u);
+    const foco = document.activeElement?.id === 'd-q' ? document.activeElement.selectionStart : null;
     corpo.innerHTML = `
       <div class="toolbar">
         <input class="input search" id="d-q" placeholder="Buscar atendente…" value="${esc(V.q)}">
-        <select class="input" id="d-dep"><option value="">Todas as equipes</option>${deps.map(([id, n]) => `<option value="${esc(id)}" ${V.dep === id ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+        <select class="input" id="d-dep"><option value="">Todas as equipes</option>${opcoesEquipes(V.dep)}</select>
         <div class="seg-ctl" id="d-sit">${[['', 'Todos'], ['online', 'Online'], ['acima', 'Acima do teto'], ['vaga', 'Com vaga']].map(([v, l]) => `<button data-v="${v}" class="${V.sit === v ? 'on' : ''}">${l}</button>`).join('')}</div>
         <a class="btn" href="/api/admin/distribuicao/atendentes.csv">Exportar planilha</a>
       </div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Atendente</th><th>Status</th><th>Abertos por equipe</th><th class="right">Abertos</th><th class="right">Vagas</th><th class="right">Concluídos hoje</th><th class="right">Ações</th></tr></thead>
+      <div class="d-massa hidden" id="d-massa">
+        <b id="d-massa-n"></b>
+        <select class="input" id="d-massa-eq"><option value="">Escolha a equipe…</option>${opcoesEquipes(V.dep)}</select>
+        <button class="btn primary sm" id="d-massa-por">Colocar na equipe</button>
+        <button class="btn sm" id="d-massa-tirar">Tirar da equipe</button>
+        <button class="btn ghost sm" id="d-massa-limpar">Limpar seleção</button>
+      </div>
+      <div class="table-wrap"><table class="d-tabela">
+        <thead><tr><th class="d-sel"><input type="checkbox" id="d-todos" title="Marcar todos da lista"></th><th>Atendente</th><th>Status</th><th>Abertos por equipe</th><th class="right">Abertos</th><th class="right">Vagas</th><th class="right">Concluídos hoje</th><th class="right">Ações</th></tr></thead>
         <tbody id="d-tb"></tbody></table></div>`;
     const tb = corpo.querySelector('#d-tb');
+    let visiveis = [];
+    const barra = () => {
+      const n = V.sel.size;
+      corpo.querySelector('#d-massa').classList.toggle('hidden', !n);
+      corpo.querySelector('#d-massa-n').textContent = `${n} selecionado${n > 1 ? 's' : ''}`;
+      const todos = corpo.querySelector('#d-todos');
+      const marcados = visiveis.filter((a) => V.sel.has(a.userId)).length;
+      todos.checked = visiveis.length > 0 && marcados === visiveis.length;
+      todos.indeterminate = marcados > 0 && marcados < visiveis.length;
+    };
     const linhas = () => {
       const q = V.q.toLowerCase();
-      const lista = d.atendentes.filter((a) => (!q || a.nome.toLowerCase().includes(q) || (a.email || '').includes(q))
+      visiveis = d.atendentes.filter((a) => (!q || a.nome.toLowerCase().includes(q) || (a.email || '').includes(q))
         && (!V.dep || a.equipes.some((e) => e.id === V.dep))
         && (V.sit !== 'online' || a.online) && (V.sit !== 'acima' || a.abertas > d.config.teto) && (V.sit !== 'vaga' || (a.online && a.vagas > 0)))
         .sort((a, b) => b.abertas - a.abertas || a.nome.localeCompare(b.nome));
-      tb.innerHTML = lista.length ? lista.map((a) => {
+      tb.innerHTML = visiveis.length ? visiveis.map((a) => {
         const pctv = Math.min(100, (a.abertas / d.config.teto) * 100);
         const cls = a.abertas > d.config.teto ? 'over' : a.abertas === d.config.teto ? 'full' : '';
         const porEquipe = a.porEquipe.length ? a.porEquipe.map((e) => `<span class="tag ${e.membro ? '' : 'd-fora'}" title="${e.membro ? '' : 'Conversas de uma equipe da qual a pessoa não é atendente'}">${esc(e.nome)} · <b>${e.n}</b></span>`).join('') : '<span class="muted small">—</span>';
-        return `<tr>
-          <td><div class="person"><div class="avatar">${esc(initials(a.nome))}</div><div><b>${esc(titleCase(a.nome))}</b><span>${esc(a.equipes.map((e) => e.nome).join(', ') || 'Sem equipe')}</span></div></div></td>
+        const equipes = a.equipes.length
+          ? a.equipes.map((e) => `<button class="d-chip ${V.dep === e.id ? 'on' : ''}" data-filtro="${esc(e.id)}" title="Ver só esta equipe">${esc(e.nome)}</button>`).join('')
+          : '<span class="muted small">Sem equipe</span>';
+        return `<tr class="${V.sel.has(a.userId) ? 'd-marcado' : ''}">
+          <td class="d-sel"><input type="checkbox" data-sel="${esc(a.userId)}" ${V.sel.has(a.userId) ? 'checked' : ''}></td>
+          <td><div class="person"><div class="avatar">${esc(initials(a.nome))}</div><div><b>${esc(titleCase(a.nome))}</b><div class="d-chips">${equipes}</div></div></div></td>
           <td>${a.online ? '<span class="pill active"><span class="dot"></span>Online</span>' : '<span class="pill offline"><span class="dot"></span>Offline</span>'}</td>
           <td class="d-equipes">${porEquipe}</td>
           <td class="right"><div class="d-carga ${cls}"><div class="d-bar"><i style="width:${pctv}%"></i></div><b class="num">${a.abertas}</b></div>
             <div class="small muted num">${a.pendentes} pend. · ${a.emAtendimento} em atend.</div></td>
           <td class="right num">${a.vagas}</td>
           <td class="right num">${d.concluidasCarregadas ? a.concluidasHoje : '<span class="muted">…</span>'}</td>
-          <td><div class="row-actions"><button class="btn sm" data-equipes="${esc(a.userId)}">Equipes</button></div></td></tr>`;
-      }).join('') : '<tr><td colspan="7" class="empty">Nenhum atendente encontrado.</td></tr>';
+          <td><div class="row-actions"><button class="btn sm" data-equipes="${esc(a.userId)}">Editar equipes</button></div></td></tr>`;
+      }).join('') : '<tr><td colspan="8" class="empty">Nenhum atendente encontrado.</td></tr>';
+      barra();
     };
     linhas();
-    corpo.querySelector('#d-q').addEventListener('input', (e) => { V.q = e.target.value; linhas(); });
-    corpo.querySelector('#d-dep').addEventListener('change', (e) => { V.dep = e.target.value; linhas(); });
+    const busca = corpo.querySelector('#d-q');
+    if (foco !== null) { busca.focus(); busca.setSelectionRange(foco, foco); }
+    busca.addEventListener('input', (e) => { V.q = e.target.value; linhas(); });
+    const filtrarEquipe = (id) => {
+      V.dep = id;
+      corpo.querySelector('#d-dep').value = id;
+      if (id) corpo.querySelector('#d-massa-eq').value = id;
+      linhas();
+    };
+    corpo.querySelector('#d-dep').addEventListener('change', (e) => filtrarEquipe(e.target.value));
     corpo.querySelectorAll('#d-sit button').forEach((b) => b.addEventListener('click', () => {
       V.sit = b.dataset.v;
       corpo.querySelectorAll('#d-sit button').forEach((x) => x.classList.toggle('on', x === b));
       linhas();
     }));
+    corpo.querySelector('#d-todos').addEventListener('change', (e) => {
+      for (const a of visiveis) e.target.checked ? V.sel.add(a.userId) : V.sel.delete(a.userId);
+      linhas();
+    });
+    tb.addEventListener('change', (e) => {
+      const c = e.target.closest('[data-sel]');
+      if (!c) return;
+      c.checked ? V.sel.add(c.dataset.sel) : V.sel.delete(c.dataset.sel);
+      c.closest('tr').classList.toggle('d-marcado', c.checked);
+      barra();
+    });
     tb.addEventListener('click', (e) => {
+      const f = e.target.closest('[data-filtro]');
+      if (f) return filtrarEquipe(V.dep === f.dataset.filtro ? '' : f.dataset.filtro);
       const b = e.target.closest('[data-equipes]');
       if (b) equipesDoAtendente(d.atendentes.find((a) => a.userId === b.dataset.equipes));
     });
+    corpo.querySelector('#d-massa-limpar').onclick = () => { V.sel.clear(); linhas(); };
+    const emMassa = async (btn, colocar) => {
+      const equipeId = corpo.querySelector('#d-massa-eq').value;
+      if (!equipeId) return toast('Escolha a equipe primeiro.', 'error');
+      const equipe = d.equipes.find((e) => e.id === equipeId);
+      const pessoas = d.atendentes.filter((a) => V.sel.has(a.userId));
+      // só quem precisa mudar: colocar quem ainda não está, tirar quem está
+      const alvo = pessoas.filter((a) => a.equipes.some((e) => e.id === equipeId) !== colocar);
+      if (!alvo.length) return toast(colocar ? `Todos os selecionados já estão em ${equipe.nome}.` : `Nenhum dos selecionados está em ${equipe.nome}.`, 'error');
+      const nomes = alvo.map((a) => esc(titleCase(a.nome)));
+      const texto = `${colocar ? 'Colocar' : 'Tirar'} <b>${alvo.length}</b> pessoa(s) ${colocar ? 'em' : 'de'} <b>${esc(equipe.nome)}</b>:<br>${nomes.slice(0, 12).join(', ')}${nomes.length > 12 ? ` e mais ${nomes.length - 12}` : ''}.`
+        + (colocar ? '' : '<br><br>As conversas abertas continuam com cada pessoa.');
+      if (!(await confirmDialog(colocar ? 'Colocar na equipe?' : 'Tirar da equipe?', texto, 'Confirmar'))) return;
+      const ids = alvo.map((a) => a.userId);
+      try {
+        const r = await busy(btn, () => api(`/admin/distribuicao/equipes/${encodeURIComponent(equipeId)}/membros`, { method: 'PUT', body: colocar ? { adicionar: ids } : { remover: ids } }));
+        if (r.falhas?.length) toast(`Parte não foi aplicada: ${r.falhas.join('; ')}`, 'error');
+        else toast(`${equipe.nome}: ${alvo.length} pessoa(s) ${colocar ? 'colocada(s)' : 'tirada(s)'}.`, 'ok');
+        V.sel.clear();
+        await load();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+    corpo.querySelector('#d-massa-por').onclick = (e) => emMassa(e.currentTarget, true);
+    corpo.querySelector('#d-massa-tirar').onclick = (e) => emMassa(e.currentTarget, false);
   };
 
   const equipesDoAtendente = (a) => {
@@ -1007,25 +1082,97 @@ async function viewDistribuicao(page) {
           <td class="right num">${e.online}/${e.atendentes}</td>
           <td class="right num">${e.vagasLivres}</td>
           <td>${e.alerta ? `<span class="pill over">${esc(e.alerta)}</span>` : ''}</td>
-          <td><div class="row-actions"><button class="btn sm" data-equipe="${esc(e.id)}">Configurar</button></div></td></tr>`;
+          <td><div class="row-actions"><button class="btn sm" data-equipe="${esc(e.id)}">Gerenciar</button></div></td></tr>`;
       }).join('')}</tbody></table></div>`;
     corpo.querySelector('tbody').addEventListener('click', (ev) => {
-      const b = ev.target.closest('[data-equipe]');
-      if (b) configurarEquipe(d.equipes.find((x) => x.id === b.dataset.equipe));
+      const tr = ev.target.closest('tr');
+      const b = ev.target.closest('[data-equipe]') ?? tr?.querySelector('[data-equipe]');
+      if (b) gerenciarEquipe(d.equipes.find((x) => x.id === b.dataset.equipe));
     });
   };
 
-  const configurarEquipe = (e) => {
+  /** Painel da equipe: quem está nela (tirar / colocar várias pessoas de uma vez) e configuração. */
+  const gerenciarEquipe = (e, aba = 'pessoas') => {
+    const membros = data.atendentes.filter((a) => a.equipes.some((x) => x.id === e.id));
+    const idsMembros = new Set(membros.map((a) => a.userId));
+    const porId = new Map(data.atendentes.map((a) => [a.userId, a]));
+    const outros = data.usuarios.filter((u) => !idsMembros.has(u.userId)).sort((a, b) => Number(b.online) - Number(a.online) || a.nome.localeCompare(b.nome));
+    const tirar = new Set(), colocar = new Set();
+    const linhaPessoa = (u, modo) => {
+      const a = porId.get(u.userId);
+      const outras = (a?.equipes ?? []).filter((x) => x.id !== e.id).map((x) => x.nome);
+      const marcado = modo === 'membro' ? tirar.has(u.userId) : colocar.has(u.userId);
+      return `<div class="d-pessoa ${marcado ? (modo === 'membro' ? 'saindo' : 'entrando') : ''}" data-nome="${esc(`${u.nome} ${u.email ?? ''}`.toLowerCase())}">
+        <span class="dot-status ${u.online ? 'on' : ''}" title="${u.online ? 'Online' : 'Offline'}"></span>
+        <div class="d-pessoa-info"><b>${esc(titleCase(u.nome))}</b><span>${modo === 'membro'
+          ? `${a?.abertas ?? 0} abertas${outras.length ? ` · também em ${esc(outras.join(', '))}` : ''}`
+          : esc(outras.join(', ') || 'Sem equipe')}</span></div>
+        <button type="button" class="btn sm ${modo === 'membro' ? (marcado ? '' : 'danger-ghost') : (marcado ? '' : 'primary')}" data-${modo}="${esc(u.userId)}">${modo === 'membro' ? (marcado ? 'Desfazer' : 'Tirar') : (marcado ? 'Desfazer' : 'Colocar')}</button></div>`;
+    };
     const m = modal(`
-      <div class="modal-head"><div><h2>Configurar equipe</h2><p class="muted small" style="margin:4px 0 0">${e.atendentes} atendente(s) · ${e.aguardando} na fila</p></div><button class="btn ghost sm" data-close>✕</button></div>
-      <form id="f">
+      <div class="modal-head"><div><h2>${esc(e.nome)}</h2><p class="muted small" style="margin:4px 0 0">${e.atendentes} atendente(s) · ${e.online} online · ${e.aguardando} na fila · ${QUEM_DISTRIBUI[e.quemDistribui][1]}</p></div><button class="btn ghost sm" data-close>✕</button></div>
+      <div class="seg-ctl" id="g-abas" style="margin-bottom:14px"><button data-g="pessoas">Pessoas</button><button data-g="config">Configuração</button></div>
+      <div id="g-pessoas">
+        <div class="d-colunas">
+          <div><div class="d-col-head"><b>Na equipe (${membros.length})</b><input class="input sm" id="g-qm" placeholder="Filtrar…"></div>
+            <div class="d-lista" id="g-membros">${membros.length ? '' : '<div class="empty small">Ninguém nesta equipe.</div>'}</div></div>
+          <div><div class="d-col-head"><b>Colocar pessoas</b><input class="input sm" id="g-qo" placeholder="Buscar pessoa…"></div>
+            <div class="d-lista" id="g-outros"></div></div>
+        </div>
+        <p class="hint" style="margin-top:12px">Quem sai continua com as conversas abertas. As mudanças valem no Pulse Direct ao salvar.</p>
+        <div class="modal-foot"><span class="small muted" id="g-resumo" style="margin-right:auto"></span><button class="btn" data-close>Cancelar</button><button class="btn primary" id="g-salvar" disabled>Salvar mudanças</button></div>
+      </div>
+      <form id="f" class="hidden">
         <div class="field"><label for="d-nome">Nome</label><input class="input" id="d-nome" maxlength="80" value="${esc(e.nome)}" required></div>
         <label class="d-switch-row"><input type="checkbox" id="d-incluir" ${e.incluida ? 'checked' : ''}><span class="d-switch"></span>
           <span><b>Incluir na distribuição automática</b><span class="hint">Com a distribuição ligada, o sistema entrega as conversas da fila desta equipe.</span></span></label>
         <label class="d-switch-row"><input type="checkbox" id="d-nativa" ${e.distribuicaoNativa ? 'checked' : ''}><span class="d-switch"></span>
           <span><b>Distribuição do próprio Pulse Direct</b><span class="hint">Precisa estar desligada para o sistema assumir a equipe (as duas juntas disputariam a fila).</span></span></label>
         <div class="modal-foot"><button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Salvar</button></div>
-      </form>`);
+      </form>`, { wide: true });
+
+    const trocarAba = (g) => {
+      m.el.querySelectorAll('#g-abas button').forEach((b) => b.classList.toggle('on', b.dataset.g === g));
+      m.el.querySelector('#g-pessoas').classList.toggle('hidden', g !== 'pessoas');
+      m.el.querySelector('#f').classList.toggle('hidden', g !== 'config');
+    };
+    m.el.querySelectorAll('#g-abas button').forEach((b) => b.addEventListener('click', () => trocarAba(b.dataset.g)));
+    trocarAba(aba);
+
+    const filtrar = (lista, q) => lista.querySelectorAll('.d-pessoa').forEach((l) => l.classList.toggle('hidden', Boolean(q) && !l.dataset.nome.includes(q)));
+    const desenharPessoas = () => {
+      const lm = m.el.querySelector('#g-membros'), lo = m.el.querySelector('#g-outros');
+      if (membros.length) lm.innerHTML = membros.map((a) => linhaPessoa(a, 'membro')).join('');
+      lo.innerHTML = outros.length ? outros.map((u) => linhaPessoa(u, 'outro')).join('') : '<div class="empty small">Todos os usuários já estão nesta equipe.</div>';
+      filtrar(lm, m.el.querySelector('#g-qm').value.toLowerCase());
+      filtrar(lo, m.el.querySelector('#g-qo').value.toLowerCase());
+      const partes = [colocar.size ? `colocar ${colocar.size}` : '', tirar.size ? `tirar ${tirar.size}` : ''].filter(Boolean);
+      m.el.querySelector('#g-resumo').textContent = partes.length ? `Ao salvar: ${partes.join(' e ')}.` : '';
+      m.el.querySelector('#g-salvar').disabled = !partes.length;
+    };
+    desenharPessoas();
+    m.el.querySelector('#g-qm').addEventListener('input', (ev) => filtrar(m.el.querySelector('#g-membros'), ev.target.value.toLowerCase()));
+    m.el.querySelector('#g-qo').addEventListener('input', (ev) => filtrar(m.el.querySelector('#g-outros'), ev.target.value.toLowerCase()));
+    m.el.querySelector('#g-pessoas').addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-membro], [data-outro]');
+      if (!b) return;
+      const [conj, id] = b.dataset.membro ? [tirar, b.dataset.membro] : [colocar, b.dataset.outro];
+      conj.has(id) ? conj.delete(id) : conj.add(id);
+      desenharPessoas();
+    });
+    m.el.querySelector('#g-salvar').onclick = async (ev) => {
+      const nome = (id) => esc(titleCase((data.usuarios.find((u) => u.userId === id) ?? porId.get(id))?.nome ?? id));
+      const texto = [colocar.size ? `Colocar: <b>${[...colocar].map(nome).join(', ')}</b>` : '', tirar.size ? `Tirar: <b>${[...tirar].map(nome).join(', ')}</b>` : ''].filter(Boolean).join('<br>');
+      if (!(await confirmDialog(`Mudar as pessoas de ${e.nome}?`, texto, 'Confirmar'))) return;
+      try {
+        const r = await busy(ev.currentTarget, () => api(`/admin/distribuicao/equipes/${encodeURIComponent(e.id)}/membros`, { method: 'PUT', body: { adicionar: [...colocar], remover: [...tirar] } }));
+        m.close();
+        if (r.falhas?.length) toast(`Parte não foi aplicada: ${r.falhas.join('; ')}`, 'error');
+        else toast(`${e.nome}: equipe atualizada no Pulse Direct.`, 'ok');
+        await load();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+
     m.el.querySelector('form').onsubmit = async (ev) => {
       ev.preventDefault();
       const body = { nome: m.el.querySelector('#d-nome').value, incluir: m.el.querySelector('#d-incluir').checked, distribuicaoNativa: m.el.querySelector('#d-nativa').checked };
