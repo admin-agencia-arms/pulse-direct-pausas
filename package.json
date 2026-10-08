@@ -10,9 +10,11 @@
   "scripts": {
     "start": "node --env-file=.env src/dev.js",
     "dev": "node --env-file=.env --watch src/dev.js",
-    "admin": "node --env-file=.env src/make-admin.js"
+    "admin": "node --env-file=.env src/make-admin.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
+    "@vercel/functions": "^2.2.13",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.2",
     "postgres": "^3.4.9"

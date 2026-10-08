@@ -8,7 +8,8 @@ if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL não configurada.')
 export const sql = postgres(process.env.DATABASE_URL, {
   prepare: false,
   max_pipeline: 1,
-  ssl: 'require',
+  // DB_SSL=disable só para banco local de desenvolvimento/testes
+  ssl: process.env.DB_SSL === 'disable' ? false : 'require',
   max: Number(process.env.DB_POOL_MAX || 4),
   idle_timeout: 20,
   connect_timeout: 10,

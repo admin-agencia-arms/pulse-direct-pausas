@@ -811,9 +811,312 @@ async function viewUsers(page) {
   });
 }
 
+// ---------------- Distribuição automática (admin, fora do menu: /distribuicao) ----------------
+const haQuanto = (ts) => {
+  if (!ts) return '—';
+  const s = Math.max(0, Math.round((now() - ts) / 1000));
+  if (s < 60) return `há ${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `há ${m} min`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `há ${h} h ${pad(m % 60)} min` : `há ${Math.floor(h / 24)} dias`;
+};
+const QUEM_DISTRIBUI = {
+  sistema: ['brand', 'Distribuição automática'],
+  pulse: ['pause', 'Pulse Direct'],
+  manual: ['offline', 'Manual'],
+  ninguem: ['offline', 'Sem atendente'],
+};
+
+async function viewDistribuicao(page) {
+  const V = (S.dist ??= { aba: 'atendentes', q: '', dep: '', sit: '', reg: '' });
+  let data = null;
+  page.innerHTML = `
+    <div class="page-head"><div><h1>Distribuição automática</h1>
+      <p>Cada atendente com até <b id="d-teto">15</b> conversas abertas, puxando da fila das equipes dele.</p></div>
+      <div class="d-head-actions"><span class="small muted" id="d-atualizado"></span>
+        <button class="btn" id="d-config">Configurações</button>
+        <button class="btn" id="d-refresh">⟳ Atualizar</button></div></div>
+    <div id="d-status"></div>
+    <div id="d-avisos"></div>
+    <div class="kpis d-kpis section-gap" id="d-kpis"></div>
+    <div class="card section-gap">
+      <div class="toolbar d-tabs"><div class="seg-ctl" id="d-abas">
+        <button data-aba="atendentes">Atendentes</button><button data-aba="equipes">Equipes</button><button data-aba="registro">Registro</button></div></div>
+      <div id="d-corpo"><div class="empty"><div class="spinner" style="margin:auto"></div><p>Lendo as conversas no Pulse Direct…</p></div></div>
+    </div>
+    <p class="hint" id="d-regra"></p>`;
+
+  const drawStatus = () => {
+    const d = data;
+    page.querySelector('#d-teto').textContent = d.config.teto;
+    page.querySelector('#d-atualizado').textContent = d.ultimoCicloOkEm ? `Atualizado ${haQuanto(d.ultimoCicloOkEm)}` : 'Carregando…';
+    const ev = d.gatilhos.evento, ag = d.gatilhos.agendador;
+    const semGatilho = !ev || now() - ev > 10 * 60_000;
+    page.querySelector('#d-status').innerHTML = `
+      <div class="card d-status ${d.ligado ? 'on' : 'off'}">
+        <div class="d-status-main">
+          <div class="state-label"><span class="dot ${d.ligado ? 'live' : ''}"></span>${d.ligado ? 'Ligada' : 'Desligada'}</div>
+          <div class="d-status-title">${d.ligado ? 'Distribuindo conversas nas equipes incluídas' : 'Só simulando: nenhuma conversa é atribuída'}</div>
+          <div class="muted small">${d.ligado
+            ? `${d.resumo.equipesIncluidas} equipe(s) incluída(s). Cada entrega é conferida no Pulse Direct na hora.`
+            : `Veja na aba Registro o que o sistema faria. ${d.resumo.equipesIncluidas} equipe(s) incluída(s).`}</div>
+        </div>
+        <div class="d-status-side">
+          <div class="small muted">Gatilho por eventos: <b>${ev ? haQuanto(ev) : 'não configurado'}</b>${ag ? ` · Agendador: <b>${haQuanto(ag)}</b>` : ''}</div>
+          ${d.ligado && semGatilho ? '<div class="small" style="color:var(--warn)">Sem eventos recentes: a distribuição só roda com esta tela aberta.</div>' : ''}
+          <div class="d-status-btns">
+            ${!ev && d.eventosConfiguravel ? '<button class="btn sm" id="d-eventos">Ligar eventos do Pulse Direct</button>' : ''}
+            <button class="btn ${d.ligado ? 'danger-ghost' : 'primary'}" id="d-ligar">${d.ligado ? 'Desligar distribuição' : 'Ligar distribuição automática'}</button>
+          </div>
+        </div>
+      </div>`;
+    const avisos = [...d.avisos];
+    if (d.erros?.seguidos) avisos.unshift(`O último ciclo falhou (${d.erros.seguidos} seguido${d.erros.seguidos > 1 ? 's' : ''}): ${d.erros.ultimo?.mensagem ?? ''}`);
+    page.querySelector('#d-avisos').innerHTML = avisos.length
+      ? `<div class="d-avisos section-gap">${avisos.map((a) => `<div>${esc(a)}</div>`).join('')}</div>` : '';
+    const r = d.resumo;
+    const kpi = (label, value, cls = '') => `<div class="kpi card"><div class="label">${label}</div><div class="value num ${cls}">${value}</div></div>`;
+    page.querySelector('#d-kpis').innerHTML = !d.leituraCompleta
+      ? kpi('Atendentes online', `${r.online}<small class="muted"> de ${r.atendentesEmEquipe}</small>`) + kpi('Conversas', '<small class="muted">lendo…</small>')
+      : kpi('Atendentes online', `${r.online}<small class="muted"> de ${r.atendentesEmEquipe}</small>`, 'ok')
+        + kpi('Conversas com atendentes', r.abertasComAtendentes)
+        + kpi('Esperando nas filas', r.naFila, r.naFila ? 'warn' : '')
+        + kpi('Vagas livres (online)', r.vagasLivresOnline)
+        + kpi('Online acima do teto', r.onlineAcimaDoTeto, r.onlineAcimaDoTeto ? 'danger' : '')
+        + kpi('Concluídos hoje', d.concluidasCarregadas ? r.concluidasHoje : '<small class="muted">carregando…</small>');
+    page.querySelector('#d-regra').textContent = `Regra: a conversa mais antiga da fila vai para o atendente online daquela equipe com mais vagas (empate: quem recebeu há mais tempo). `
+      + `Contam como abertas as pendentes e as em atendimento, até o atendente finalizar. Ninguém recebe acima de ${d.config.teto}. Só equipes incluídas (aba Equipes › Configurar) são distribuídas.`;
+    page.querySelector('#d-ligar').onclick = (e) => alternar(e.currentTarget);
+    page.querySelector('#d-eventos')?.addEventListener('click', async (e) => {
+      if (!(await confirmDialog('Ligar eventos do Pulse Direct', 'O Pulse Direct passa a avisar este sistema a cada conversa nova, atualizada ou encerrada. É o que faz a distribuição rodar sem ninguém com esta tela aberta.', 'Ligar eventos'))) return;
+      try { await busy(e.currentTarget, () => api('/admin/distribuicao/eventos', { method: 'POST' })); toast('Eventos ligados.', 'ok'); await load(); } catch (err) { toast(err.message, 'error'); }
+    });
+  };
+
+  const alternar = async (btn) => {
+    const ligar = !data.ligado;
+    const n = data.resumo.equipesIncluidas;
+    const ok = ligar
+      ? await confirmDialog('Ligar distribuição automática?', n
+        ? `A partir de agora o sistema <b>atribui conversas de verdade</b> no Pulse Direct, nas ${n} equipe(s) incluída(s), até ${data.config.teto} abertas por atendente. Cada entrega é conferida na hora. Para voltar a só simular, é só desligar.`
+        : 'Nenhuma equipe está incluída ainda: ligada, ela não entrega nada até você incluir uma equipe (aba Equipes › Configurar).', 'Ligar distribuição', 'primary')
+      : await confirmDialog('Desligar distribuição automática?', 'O sistema para de atribuir conversas e volta a só simular.', 'Desligar', 'primary');
+    if (!ok) return;
+    try { await busy(btn, () => api('/admin/distribuicao/ligar', { method: 'POST', body: { ligado: ligar } })); toast(ligar ? 'Distribuição ligada.' : 'Distribuição desligada.', 'ok'); await load(); } catch (err) { toast(err.message, 'error'); }
+  };
+
+  // ---- aba Atendentes ----
+  const drawAtendentes = (corpo) => {
+    const d = data;
+    const deps = [...new Map(d.atendentes.flatMap((a) => a.equipes.map((e) => [e.id, e.nome]))).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    corpo.innerHTML = `
+      <div class="toolbar">
+        <input class="input search" id="d-q" placeholder="Buscar atendente…" value="${esc(V.q)}">
+        <select class="input" id="d-dep"><option value="">Todas as equipes</option>${deps.map(([id, n]) => `<option value="${esc(id)}" ${V.dep === id ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+        <div class="seg-ctl" id="d-sit">${[['', 'Todos'], ['online', 'Online'], ['acima', 'Acima do teto'], ['vaga', 'Com vaga']].map(([v, l]) => `<button data-v="${v}" class="${V.sit === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <a class="btn" href="/api/admin/distribuicao/atendentes.csv">Exportar planilha</a>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Atendente</th><th>Status</th><th>Abertos por equipe</th><th class="right">Abertos</th><th class="right">Vagas</th><th class="right">Concluídos hoje</th><th class="right">Ações</th></tr></thead>
+        <tbody id="d-tb"></tbody></table></div>`;
+    const tb = corpo.querySelector('#d-tb');
+    const linhas = () => {
+      const q = V.q.toLowerCase();
+      const lista = d.atendentes.filter((a) => (!q || a.nome.toLowerCase().includes(q) || (a.email || '').includes(q))
+        && (!V.dep || a.equipes.some((e) => e.id === V.dep))
+        && (V.sit !== 'online' || a.online) && (V.sit !== 'acima' || a.abertas > d.config.teto) && (V.sit !== 'vaga' || (a.online && a.vagas > 0)))
+        .sort((a, b) => b.abertas - a.abertas || a.nome.localeCompare(b.nome));
+      tb.innerHTML = lista.length ? lista.map((a) => {
+        const pctv = Math.min(100, (a.abertas / d.config.teto) * 100);
+        const cls = a.abertas > d.config.teto ? 'over' : a.abertas === d.config.teto ? 'full' : '';
+        const porEquipe = a.porEquipe.length ? a.porEquipe.map((e) => `<span class="tag ${e.membro ? '' : 'd-fora'}" title="${e.membro ? '' : 'Conversas de uma equipe da qual a pessoa não é atendente'}">${esc(e.nome)} · <b>${e.n}</b></span>`).join('') : '<span class="muted small">—</span>';
+        return `<tr>
+          <td><div class="person"><div class="avatar">${esc(initials(a.nome))}</div><div><b>${esc(titleCase(a.nome))}</b><span>${esc(a.equipes.map((e) => e.nome).join(', ') || 'Sem equipe')}</span></div></div></td>
+          <td>${a.online ? '<span class="pill active"><span class="dot"></span>Online</span>' : '<span class="pill offline"><span class="dot"></span>Offline</span>'}</td>
+          <td class="d-equipes">${porEquipe}</td>
+          <td class="right"><div class="d-carga ${cls}"><div class="d-bar"><i style="width:${pctv}%"></i></div><b class="num">${a.abertas}</b></div>
+            <div class="small muted num">${a.pendentes} pend. · ${a.emAtendimento} em atend.</div></td>
+          <td class="right num">${a.vagas}</td>
+          <td class="right num">${d.concluidasCarregadas ? a.concluidasHoje : '<span class="muted">…</span>'}</td>
+          <td><div class="row-actions"><button class="btn sm" data-equipes="${esc(a.userId)}">Equipes</button></div></td></tr>`;
+      }).join('') : '<tr><td colspan="7" class="empty">Nenhum atendente encontrado.</td></tr>';
+    };
+    linhas();
+    corpo.querySelector('#d-q').addEventListener('input', (e) => { V.q = e.target.value; linhas(); });
+    corpo.querySelector('#d-dep').addEventListener('change', (e) => { V.dep = e.target.value; linhas(); });
+    corpo.querySelectorAll('#d-sit button').forEach((b) => b.addEventListener('click', () => {
+      V.sit = b.dataset.v;
+      corpo.querySelectorAll('#d-sit button').forEach((x) => x.classList.toggle('on', x === b));
+      linhas();
+    }));
+    tb.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-equipes]');
+      if (b) equipesDoAtendente(d.atendentes.find((a) => a.userId === b.dataset.equipes));
+    });
+  };
+
+  const equipesDoAtendente = (a) => {
+    const atuais = new Set(a.equipes.map((e) => e.id));
+    const abertasPorEquipe = new Map(a.porEquipe.map((e) => [e.id, e.n]));
+    const equipes = [...data.equipes].sort((x, y) => Number(atuais.has(y.id)) - Number(atuais.has(x.id)) || x.nome.localeCompare(y.nome));
+    const m = modal(`
+      <div class="modal-head"><div><h2>Equipes de ${esc(titleCase(a.nome))}</h2><p class="muted small" style="margin:4px 0 0">Marque as equipes em que a pessoa atende. Para trocar de equipe, desmarque a atual e marque a nova.</p></div><button class="btn ghost sm" data-close>✕</button></div>
+      <input class="input" id="d-fq" placeholder="Buscar equipe…" style="margin-bottom:10px">
+      <div class="d-check-list">${equipes.map((e) => `
+        <label class="d-check" data-nome="${esc(e.nome.toLowerCase())}"><input type="checkbox" value="${esc(e.id)}" ${atuais.has(e.id) ? 'checked' : ''}>
+          <span>${esc(e.nome)}</span>${abertasPorEquipe.get(e.id) ? `<span class="tag">${abertasPorEquipe.get(e.id)} abertas</span>` : ''}</label>`).join('')}</div>
+      <p class="hint" style="margin-top:12px">As conversas abertas continuam com a pessoa mesmo se ela sair da equipe. A mudança vale no Pulse Direct na hora.</p>
+      <div class="modal-foot"><button class="btn" data-close>Cancelar</button><button class="btn primary" id="d-salvar">Salvar</button></div>`);
+    m.el.querySelector('#d-fq').addEventListener('input', (e) => {
+      const q = e.target.value.toLowerCase();
+      m.el.querySelectorAll('.d-check').forEach((l) => l.classList.toggle('hidden', q && !l.dataset.nome.includes(q)));
+    });
+    m.el.querySelector('#d-salvar').onclick = async (e) => {
+      const marcadas = new Set([...m.el.querySelectorAll('.d-check input:checked')].map((i) => i.value));
+      const adicionar = [...marcadas].filter((id) => !atuais.has(id));
+      const remover = [...atuais].filter((id) => !marcadas.has(id));
+      if (!adicionar.length && !remover.length) return m.close();
+      const nome = (id) => data.equipes.find((x) => x.id === id)?.nome ?? id;
+      const texto = [remover.length ? `Tirar de: <b>${remover.map((id) => esc(nome(id))).join(', ')}</b>` : '', adicionar.length ? `Colocar em: <b>${adicionar.map((id) => esc(nome(id))).join(', ')}</b>` : ''].filter(Boolean).join('<br>');
+      if (!(await confirmDialog(`Mudar equipes de ${titleCase(a.nome)}?`, texto, 'Confirmar'))) return;
+      try {
+        const r = await busy(e.currentTarget, () => api(`/admin/distribuicao/atendentes/${encodeURIComponent(a.userId)}/equipes`, { method: 'PUT', body: { adicionar, remover } }));
+        m.close();
+        if (r.falhas?.length) toast(`Parte não foi aplicada: ${r.falhas.join('; ')}`, 'error');
+        else toast('Equipes atualizadas no Pulse Direct.', 'ok');
+        await load();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+  };
+
+  // ---- aba Equipes ----
+  const drawEquipes = (corpo) => {
+    const d = data;
+    const ordem = { sistema: 0, pulse: 1, manual: 2, ninguem: 3 };
+    const lista = [...d.equipes].sort((a, b) => Boolean(b.alerta) - Boolean(a.alerta) || b.aguardando - a.aguardando || ordem[a.quemDistribui] - ordem[b.quemDistribui] || a.nome.localeCompare(b.nome));
+    corpo.innerHTML = `<div class="table-wrap"><table>
+      <thead><tr><th>Equipe</th><th>Quem distribui</th><th class="right">Na fila</th><th class="right">Mais antiga</th><th class="right">Online</th><th class="right">Vagas livres</th><th>Alerta</th><th class="right">Ações</th></tr></thead>
+      <tbody>${lista.map((e) => {
+        const [cls, rotulo] = QUEM_DISTRIBUI[e.quemDistribui];
+        return `<tr>
+          <td><b>${esc(e.nome)}</b>${e.incluida && e.distribuicaoNativa ? '<div class="small" style="color:var(--warn)">Incluída, mas o Pulse Direct ainda distribui</div>' : ''}</td>
+          <td><span class="pill ${cls}">${rotulo}</span></td>
+          <td class="right num"><b>${e.aguardando}</b></td>
+          <td class="right num">${e.maisAntigaEm ? haQuanto(e.maisAntigaEm).replace('há ', '') : '—'}</td>
+          <td class="right num">${e.online}/${e.atendentes}</td>
+          <td class="right num">${e.vagasLivres}</td>
+          <td>${e.alerta ? `<span class="pill over">${esc(e.alerta)}</span>` : ''}</td>
+          <td><div class="row-actions"><button class="btn sm" data-equipe="${esc(e.id)}">Configurar</button></div></td></tr>`;
+      }).join('')}</tbody></table></div>`;
+    corpo.querySelector('tbody').addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-equipe]');
+      if (b) configurarEquipe(d.equipes.find((x) => x.id === b.dataset.equipe));
+    });
+  };
+
+  const configurarEquipe = (e) => {
+    const m = modal(`
+      <div class="modal-head"><div><h2>Configurar equipe</h2><p class="muted small" style="margin:4px 0 0">${e.atendentes} atendente(s) · ${e.aguardando} na fila</p></div><button class="btn ghost sm" data-close>✕</button></div>
+      <form id="f">
+        <div class="field"><label for="d-nome">Nome</label><input class="input" id="d-nome" maxlength="80" value="${esc(e.nome)}" required></div>
+        <label class="d-switch-row"><input type="checkbox" id="d-incluir" ${e.incluida ? 'checked' : ''}><span class="d-switch"></span>
+          <span><b>Incluir na distribuição automática</b><span class="hint">Com a distribuição ligada, o sistema entrega as conversas da fila desta equipe.</span></span></label>
+        <label class="d-switch-row"><input type="checkbox" id="d-nativa" ${e.distribuicaoNativa ? 'checked' : ''}><span class="d-switch"></span>
+          <span><b>Distribuição do próprio Pulse Direct</b><span class="hint">Precisa estar desligada para o sistema assumir a equipe (as duas juntas disputariam a fila).</span></span></label>
+        <div class="modal-foot"><button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Salvar</button></div>
+      </form>`);
+    m.el.querySelector('form').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const body = { nome: m.el.querySelector('#d-nome').value, incluir: m.el.querySelector('#d-incluir').checked, distribuicaoNativa: m.el.querySelector('#d-nativa').checked };
+      if (body.distribuicaoNativa !== e.distribuicaoNativa
+        && !(await confirmDialog(`${body.distribuicaoNativa ? 'Ligar' : 'Desligar'} a distribuição do Pulse Direct?`, `Isso muda a configuração da equipe <b>${esc(e.nome)}</b> no próprio Pulse Direct, na hora.`, 'Confirmar'))) return;
+      try {
+        await busy(ev.submitter, () => api(`/admin/distribuicao/equipes/${encodeURIComponent(e.id)}`, { method: 'PUT', body }));
+        m.close();
+        toast('Equipe atualizada.', 'ok');
+        await load();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+  };
+
+  // ---- aba Registro ----
+  const NOMES_CAT = { pessoas: 'Pessoas e equipes', decisoes: 'Decisão', sistema: 'Sistema' };
+  const drawRegistro = async (corpo) => {
+    corpo.innerHTML = `
+      <div class="toolbar"><div class="seg-ctl" id="d-cat">${[['', 'Tudo'], ['pessoas', 'Pessoas e equipes'], ['decisoes', 'Decisões'], ['erros', 'Avisos e erros'], ['sistema', 'Sistema']].map(([v, l]) => `<button data-v="${v}" class="${V.reg === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+      <div id="d-reg" class="d-log"><div class="empty"><div class="spinner" style="margin:auto"></div></div></div>`;
+    const carregar = async () => {
+      const itens = await api(`/admin/distribuicao/registro?limite=300${V.reg ? `&categoria=${V.reg}` : ''}`);
+      const hoje = new Date().toDateString();
+      const alvo = corpo.querySelector('#d-reg');
+      if (!alvo) return;
+      alvo.innerHTML = itens.length ? itens.map((i) => {
+        const dt = new Date(i.em);
+        const quando = dt.toDateString() === hoje ? dt.toLocaleTimeString('pt-BR') : fmtDateTime(i.em);
+        return `<div class="d-log-item ${esc(i.nivel)}"><span class="num muted small">${quando}</span><div><div>${esc(i.mensagem)}</div><div class="small muted">${NOMES_CAT[i.categoria] || esc(i.categoria)}</div></div></div>`;
+      }).join('') : '<div class="empty">Nada registrado nesta categoria ainda.</div>';
+    };
+    corpo.querySelectorAll('#d-cat button').forEach((b) => b.addEventListener('click', () => {
+      V.reg = b.dataset.v;
+      corpo.querySelectorAll('#d-cat button').forEach((x) => x.classList.toggle('on', x === b));
+      carregar().catch((err) => toast(err.message, 'error'));
+    }));
+    await carregar();
+  };
+
+  const drawCorpo = async () => {
+    page.querySelectorAll('#d-abas button').forEach((b) => b.classList.toggle('on', b.dataset.aba === V.aba));
+    const corpo = page.querySelector('#d-corpo');
+    if (V.aba === 'equipes') drawEquipes(corpo);
+    else if (V.aba === 'registro') await drawRegistro(corpo);
+    else drawAtendentes(corpo);
+  };
+
+  const configModal = () => {
+    const c = data.config;
+    const m = modal(`
+      <div class="modal-head"><h2>Configurações</h2><button class="btn ghost sm" data-close>✕</button></div>
+      <form id="f">
+        <div class="field"><label for="c-teto">Teto de conversas abertas por atendente</label><input class="input" id="c-teto" type="number" min="1" max="200" value="${c.teto}" required>
+          <span class="hint">Pendentes + em atendimento, até o atendente finalizar.</span></div>
+        <div class="field"><label for="c-max">Máximo de conversas por atendente a cada ciclo</label><input class="input" id="c-max" type="number" min="1" max="50" value="${c.maxPorCiclo}" required>
+          <span class="hint">Evita despejar muitas conversas de uma vez em quem acabou de ficar online.</span></div>
+        <div class="field"><label for="c-alerta">Alertar fila esperando há mais de (minutos)</label><input class="input" id="c-alerta" type="number" min="1" max="1440" value="${c.alertaFilaMin}" required></div>
+        <div class="modal-foot"><button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Salvar</button></div>
+      </form>`);
+    m.el.querySelector('form').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const body = { teto: Number(m.el.querySelector('#c-teto').value), maxPorCiclo: Number(m.el.querySelector('#c-max').value), alertaFilaMin: Number(m.el.querySelector('#c-alerta').value) };
+      try { await busy(ev.submitter, () => api('/admin/distribuicao/config', { method: 'PUT', body })); m.close(); toast('Configurações salvas.', 'ok'); await load(); } catch (err) { toast(err.message, 'error'); }
+    };
+  };
+
+  const load = async () => {
+    try {
+      data = await api('/admin/distribuicao');
+    } catch (err) {
+      page.querySelector('#d-corpo').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+      throw err;
+    }
+    drawStatus();
+    if (V.aba !== 'registro' || !page.querySelector('#d-reg')) await drawCorpo();
+  };
+
+  page.querySelectorAll('#d-abas button').forEach((b) => b.addEventListener('click', () => { V.aba = b.dataset.aba; if (data) drawCorpo().catch((err) => toast(err.message, 'error')); }));
+  page.querySelector('#d-refresh').onclick = async (e) => {
+    try { await busy(e.currentTarget, async () => { await api('/admin/distribuicao/atualizar', { method: 'POST' }); await load(); }); } catch (err) { toast(err.message, 'error'); }
+  };
+  page.querySelector('#d-config').onclick = () => data && configModal();
+
+  await load();
+  setPoll(() => load().catch(() => {}), 20000);
+}
+
 // ---------------- Roteamento ----------------
-const ROUTES = { '/': viewMe, '/equipe': viewTeam, '/relatorios': viewReports, '/motivos': viewReasons, '/usuarios': viewUsers };
-const ADMIN_ONLY = new Set(['/equipe', '/relatorios', '/motivos', '/usuarios']);
+const ROUTES = { '/': viewMe, '/equipe': viewTeam, '/relatorios': viewReports, '/motivos': viewReasons, '/usuarios': viewUsers, '/distribuicao': viewDistribuicao };
+// /distribuicao fica fora do menu: só quem tem o endereço chega lá (e só admin)
+const ADMIN_ONLY = new Set(['/equipe', '/relatorios', '/motivos', '/usuarios', '/distribuicao']);
 
 async function route() {
   if (!S.me) return;
@@ -829,6 +1132,9 @@ async function route() {
   }
 }
 window.addEventListener('hashchange', route);
+
+// Endereço direto: gestaodepausa…/distribuicao → rota interna #/distribuicao
+if (/^\/distribui(c|%C3%A7|ç)(a|%C3%A3|ã)o\/?$/i.test(location.pathname)) history.replaceState(null, '', '/#/distribuicao');
 
 async function boot() {
   try {

@@ -4,6 +4,7 @@ import { sql, audit, getMeta } from './db.js';
 import * as auth from './auth.js';
 import * as svc from './service.js';
 import { parseRange, loadIntervals, summarize, daysToArray, dayStart, todayKey, DAY } from './stats.js';
+import { rotasPublicas as distribuicaoPublica, rotasAdmin as distribuicaoAdmin } from './distribuicao/rotas.js';
 
 export const app = express();
 
@@ -41,6 +42,9 @@ api.get('/cron/sync', wrap(async (req, res) => {
   if (!ok) return res.status(401).json({ error: 'Não autorizado.' });
   res.json(await svc.syncUsers());
 }));
+
+// Distribuição automática: eventos do Pulse Direct e agendador (protegidos por segredo)
+api.use('/distribuicao', distribuicaoPublica);
 
 // ---------------- Autenticação ----------------
 
@@ -361,6 +365,9 @@ admin.post('/users/:id/reset-password', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 admin.post('/sync', wrap(async (req, res) => res.json(await svc.syncUsers())));
+
+// Distribuição automática (aba /distribuicao)
+admin.use('/distribuicao', distribuicaoAdmin);
 
 api.use('/admin', admin);
 app.use('/api', api);

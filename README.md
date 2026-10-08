@@ -37,3 +37,25 @@ Configure na Vercel as variáveis do `.env.example`, com `COOKIE_SECURE=true`. A
 - `npm run admin -- email@dominio.com` (usa o `DATABASE_URL` do `.env`).
 
 Depois disso, novos admins podem ser promovidos pela tela **Usuários**.
+
+## Distribuição automática (`/distribuicao`)
+Tela só de admin e **fora do menu** (acesso pelo endereço). Mantém cada atendente com até 15 conversas abertas (pendentes + em atendimento, até ele finalizar): a conversa mais antiga da fila vai para o atendente **online** daquela equipe com mais vagas. Ninguém perde conversa; quem está acima do teto só não recebe mais.
+
+Sobe **desligada**: só simula, e a aba Registro mostra o que faria.
+
+| Aba | O que tem |
+|---|---|
+| Atendentes | abertos por equipe, vagas, concluídos hoje, planilha · botão **Equipes**: incluir, tirar ou trocar a pessoa de equipe no Pulse Direct |
+| Equipes | fila, espera mais antiga, quem distribui · **Configurar**: nome, incluir na distribuição, distribuição do próprio Pulse Direct |
+| Registro | entregas, mudanças de pessoas e equipes, avisos e erros |
+
+**Para ligar:**
+1. Rode `db/distribuicao.sql` com o dono do banco (depois do `schema.sql`).
+2. Defina `DISTRIBUICAO_SEGREDO` na Vercel (opcionais: `PULSE_CHAT_API_URL`, `DISTRIBUICAO_ORCAMENTO_5MIN`).
+3. Na tela, **Ligar eventos do Pulse Direct**: cada conversa nova, atualizada ou encerrada dispara um ciclo, sem ninguém com a tela aberta. Opcional: agendador chamando `GET /api/distribuicao/ciclo` com `Authorization: Bearer <CRON_SECRET>`.
+4. Em **Equipes › Configurar**, inclua a equipe e desligue nela a distribuição do próprio Pulse Direct.
+5. **Ligar distribuição automática.** Desligar volta a só simular.
+
+Cada entrega confere a conversa e a contagem do atendente no Pulse Direct na hora, e uma escrita nunca é repetida. Pessoas, equipes e quem está online vêm direto do Pulse Direct (relidos a cada poucos segundos), sem cadastro paralelo.
+
+**Testes:** `DATABASE_URL_TESTE=postgres://pausas_app:<senha>@localhost:5432/<banco_local> npm test` (banco local com `schema.sql` e `distribuicao.sql`; recusa banco remoto).

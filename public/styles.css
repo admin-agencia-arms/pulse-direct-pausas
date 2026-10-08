@@ -282,3 +282,53 @@ td.right, th.right { text-align: right; }
 .inline-form { display: grid; grid-template-columns: 1fr 140px 60px auto; gap: 10px; align-items: end; }
 @media (max-width: 640px) { .inline-form { grid-template-columns: 1fr 1fr; } }
 .section-gap { margin-top: 16px; }
+
+/* ---------- Distribuição automática (/distribuicao) ---------- */
+a.btn { text-decoration: none; color: var(--text); }
+.d-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.d-status { padding: 20px 22px; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; position: relative; overflow: hidden; }
+.d-status::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--off); }
+.d-status.on::before { background: var(--ok); }
+.d-status.on .state-label { color: var(--ok); }
+.d-status.off .state-label { color: var(--muted); }
+.d-status-title { font-size: 18px; font-weight: 750; letter-spacing: -.01em; margin: 6px 0 4px; }
+.d-status-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; text-align: right; }
+.d-status-btns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.d-avisos { background: var(--warn-soft); color: var(--warn); border-radius: 12px; padding: 12px 16px; font-size: 13px; font-weight: 500; display: grid; gap: 4px; }
+.d-kpis { grid-template-columns: repeat(6, 1fr); }
+@media (max-width: 1100px) { .d-kpis { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 600px) { .d-kpis { grid-template-columns: repeat(2, 1fr); } }
+.kpi .value small { font-size: 13px; font-weight: 500; }
+.d-equipes { white-space: normal; min-width: 180px; max-width: 380px; }
+.tag.d-fora { border: 1px dashed var(--border); background: transparent; }
+.d-carga { display: inline-flex; align-items: center; gap: 10px; }
+.d-bar { width: 64px; height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+.d-bar i { display: block; height: 100%; background: var(--brand); border-radius: 99px; }
+.d-carga.full .d-bar i { background: var(--warn); }
+.d-carga.over .d-bar i { background: var(--danger); }
+.d-carga.over b { color: var(--danger); }
+.d-check-list { max-height: 50vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+.d-check { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.d-check:last-child { border-bottom: 0; }
+.d-check:hover { background: var(--surface-2); }
+.d-check > span:first-of-type { flex: 1; }
+.d-check input { width: 16px; height: 16px; accent-color: var(--brand); }
+.d-switch-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-top: 1px solid var(--border); cursor: pointer; position: relative; }
+.d-switch-row input { position: absolute; opacity: 0; pointer-events: none; }
+.d-switch { width: 38px; height: 22px; border-radius: 99px; background: var(--border); position: relative; flex: none; transition: background .15s; margin-top: 1px; }
+.d-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .2); transition: transform .15s; }
+.d-switch-row input:checked + .d-switch { background: var(--brand); }
+.d-switch-row input:checked + .d-switch::after { transform: translateX(16px); }
+.d-switch-row input:focus-visible + .d-switch { box-shadow: 0 0 0 3px var(--brand-soft); }
+.d-switch-row b { display: block; }
+.d-switch-row .hint { display: block; margin-top: 2px; }
+.d-log { max-height: 640px; overflow: auto; }
+.d-log-item { display: grid; grid-template-columns: 96px 1fr; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); border-left: 3px solid transparent; font-size: 13px; }
+.d-log-item:last-child { border-bottom: 0; }
+.d-log-item.aviso { border-left-color: var(--warn); }
+.d-log-item.erro { border-left-color: var(--danger); }
+@media (max-width: 720px) {
+  .d-status-side { align-items: flex-start; text-align: left; }
+  .d-status-btns { justify-content: flex-start; }
+  .d-log-item { grid-template-columns: 1fr; gap: 2px; }
+}
