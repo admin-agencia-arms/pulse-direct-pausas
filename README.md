@@ -39,7 +39,7 @@ Configure na Vercel as variáveis do `.env.example`, com `COOKIE_SECURE=true`. A
 Depois disso, novos admins podem ser promovidos pela tela **Usuários**.
 
 ## Distribuição automática (`/distribuicao`)
-Tela só de admin e **fora do menu** (acesso pelo endereço). Mantém cada atendente com até 15 conversas abertas (pendentes + em atendimento, até ele finalizar): a conversa mais antiga da fila vai para o atendente **online** daquela equipe com mais vagas. Ninguém perde conversa; quem está acima do teto só não recebe mais.
+Aba **Distribuição** no menu, só para admin. Mantém cada atendente com até 15 conversas abertas (pendentes + em atendimento, até ele finalizar): a conversa mais antiga da fila vai para o atendente **online** daquela equipe com mais vagas. Ninguém perde conversa; quem está acima do teto só não recebe mais.
 
 Sobe **desligada**: só simula, e a aba Registro mostra o que faria.
 
