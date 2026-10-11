@@ -909,11 +909,16 @@ async function viewDistribuicao(page) {
     const n = data.resumo.equipesIncluidas;
     const ok = ligar
       ? await confirmDialog('Ligar distribuição automática?', n
-        ? `A partir de agora o sistema <b>atribui conversas de verdade</b> no Pulse Direct, nas ${n} equipe(s) incluída(s), até ${data.config.teto} abertas por atendente. Cada entrega é conferida na hora. Para voltar a só simular, é só desligar.`
+        ? `A partir de agora o sistema <b>atribui conversas de verdade</b> no Pulse Direct, nas ${n} equipe(s) incluída(s), até ${data.config.teto} abertas por atendente. Nessas equipes a distribuição do próprio Pulse Direct é <b>desligada</b> (as duas juntas disputariam a fila). Cada entrega é conferida na hora.`
         : 'Nenhuma equipe está incluída ainda: ligada, ela não entrega nada até você incluir uma equipe (aba Equipes › Gerenciar › Configuração).', 'Ligar distribuição', 'primary')
-      : await confirmDialog('Desligar distribuição automática?', 'O sistema para de atribuir conversas e volta a só simular.', 'Desligar', 'primary');
+      : await confirmDialog('Desligar distribuição automática?', `O sistema para de atribuir conversas e a distribuição do próprio Pulse Direct é <b>religada</b> nas ${n} equipe(s) incluída(s), para nenhuma fila ficar parada.`, 'Desligar e devolver ao Pulse Direct', 'primary');
     if (!ok) return;
-    try { await busy(btn, () => api('/admin/distribuicao/ligar', { method: 'POST', body: { ligado: ligar } })); toast(ligar ? 'Distribuição ligada.' : 'Distribuição desligada.', 'ok'); await load(); } catch (err) { toast(err.message, 'error'); }
+    try {
+      const r = await busy(btn, () => api('/admin/distribuicao/ligar', { method: 'POST', body: { ligado: ligar, trocarPulse: true } }));
+      if (r.falhas?.length) toast(`Parte das equipes não mudou no Pulse Direct: ${r.falhas.join('; ')}`, 'error');
+      else toast(ligar ? 'Distribuição ligada.' : 'Distribuição desligada e equipes devolvidas ao Pulse Direct.', 'ok');
+      await load();
+    } catch (err) { toast(err.message, 'error'); }
   };
 
   // ---- aba Atendentes ----

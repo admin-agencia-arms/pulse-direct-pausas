@@ -14,7 +14,10 @@ export const CONFIG_PADRAO = Object.freeze({ ligado: false, teto: 15, maxPorCicl
 
 const FILTROS_ABERTAS = [['Status', 'STARTED'], ['Status', 'PENDING'], ['Status', 'IN_PROGRESS']];
 const DESDE_SEMPRE = Date.UTC(2000, 0, 1);
-const SOBREPOSICAO_MS = 120_000;
+// Cada ciclo relê o que mudou desde a marca menos esta folga (atraso de gravação no Pulse Direct).
+// Era 2 min: com ciclos a cada ~10 s isso relia ~12x as mesmas conversas e era o maior gasto de
+// requisições. O que escapar a releitura completa (a cada 10 min) corrige.
+const SOBREPOSICAO_MS = 30_000;
 const RECONCILIAR_MS = 10 * 60_000;
 const EQUIPES_A_CADA_MS = 2 * 60_000;
 const CONCLUIDAS_A_CADA_MS = 3 * 3_600_000;
@@ -692,13 +695,46 @@ export class Distribuidor {
 
   // ---------- ações de administrador ----------
 
-  async ligar(ligado, ator) {
+  /**
+   * Liga/desliga. Com trocarPulse, a distribuição do próprio Pulse Direct acompanha nas equipes incluídas:
+   * ligar ASSUME as equipes (desliga a do Pulse); desligar DEVOLVE (religa a do Pulse), para nenhuma fila
+   * ficar sem ninguém distribuindo. Ordem sem buraco: ao ligar, primeiro liga aqui; ao desligar, primeiro
+   * religa no Pulse (enquanto isso o lote pula equipe com a do Pulse ligada).
+   */
+  async ligar(ligado, ator, { trocarPulse = false } = {}) {
     const config = await this.lerConfig();
+    const trocar = async () => {
+      if (!trocarPulse) return { trocadas: [], falhas: [] };
+      const pendentes = [];
+      const pulse = await this.novoPulse(false, pendentes);
+      try {
+        const alvo = (await pulse.listarEquipes()).filter((e) => config.equipes[e.id] && e.distribuicaoNativa === !ligado);
+        const trocadas = [], falhas = [];
+        for (const e of alvo) {
+          try {
+            await pulse.configurarEquipe(e.id, { distribuicaoNativa: !ligado });
+            trocadas.push(e.nome);
+          } catch (err) {
+            falhas.push(`${e.nome}: ${msg(err)}`);
+          }
+        }
+        if (trocadas.length) {
+          await this.log.info('gestao_equipe', `${ator} ${ligado ? 'desligou' : 'religou'} a distribuição do próprio Pulse Direct em ${trocadas.length} equipe(s): ${trocadas.join(', ')}.`);
+        }
+        if (falhas.length) await this.log.erro('gestao_equipe_falhou', `Falha ao ${ligado ? 'desligar' : 'religar'} a distribuição do Pulse Direct: ${falhas.join('; ')}`);
+        return { trocadas, falhas };
+      } finally {
+        await Promise.allSettled(pendentes);
+      }
+    };
+    let troca = { trocadas: [], falhas: [] };
+    if (!ligado) troca = await trocar();
     config.ligado = Boolean(ligado);
     await this.estado.gravarEstado({ config }, this.agora());
     if (config.ligado) await this.log.aviso('distribuicao_ligada', `${ator} LIGOU a distribuição automática: conversas passam a ser entregues de verdade nas equipes incluídas.`);
     else await this.log.info('distribuicao_desligada', `${ator} desligou a distribuição automática (volta a só simular).`);
-    return config;
+    if (ligado) troca = await trocar();
+    return { config, ...troca };
   }
 
   async salvarConfig(parcial, ator) {

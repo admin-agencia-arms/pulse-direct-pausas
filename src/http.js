@@ -126,7 +126,8 @@ async function shiftStart(userId, cur) {
 }
 
 api.get('/me', wrap(async (req, res) => {
-  await svc.reconcileUser(req.user);
+  // disponibilidade real no Pulse Direct: uma leitura de todos por minuto (não uma por atendente)
+  await svc.syncIfStale(60_000);
   const { state, current } = await svc.stateOf(req.user.id);
   const fromTs = dayStart(todayKey());
   const [ivs, reasons, shift] = await Promise.all([

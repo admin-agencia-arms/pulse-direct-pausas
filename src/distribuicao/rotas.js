@@ -182,9 +182,11 @@ rotasAdmin.get('/atendentes.csv', wrap(async (req, res) => {
 
 rotasAdmin.post('/ligar', wrap(async (req, res) => {
   if (typeof req.body?.ligado !== 'boolean') return res.status(400).json({ error: 'Informe ligado: true ou false.' });
-  const config = await distribuidor().ligar(req.body.ligado, nomeAtor(req.user));
-  await audit(req.user.id, null, 'distribuicao_ligar', { ligado: config.ligado });
-  res.json({ ok: true, ligado: config.ligado });
+  const d = distribuidor();
+  const r = await d.ligar(req.body.ligado, nomeAtor(req.user), { trocarPulse: req.body.trocarPulse === true }).catch((e) => { throw legivel(e); });
+  await audit(req.user.id, null, 'distribuicao_ligar', { ligado: r.config.ligado, trocadas: r.trocadas, falhas: r.falhas });
+  await cicloAposMudanca(d);
+  res.json({ ok: true, ligado: r.config.ligado, trocadas: r.trocadas, falhas: r.falhas });
 }));
 
 rotasAdmin.put('/config', wrap(async (req, res) => {

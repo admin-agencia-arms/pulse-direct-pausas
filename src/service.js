@@ -1,4 +1,4 @@
-import { sql, audit, getMeta, setMeta } from './db.js';
+import { sql, audit, setMeta } from './db.js';
 import * as crm from './crm.js';
 import { normEmail } from './auth.js';
 
@@ -99,11 +99,19 @@ export function syncUsers() {
   return syncing;
 }
 
-/** Sincroniza se a última sincronização for mais antiga que maxAge (padrão SYNC_MINUTES). Nunca lança erro. */
+/**
+ * Sincroniza se a última sincronização for mais antiga que maxAge (padrão SYNC_MINUTES). Nunca lança erro.
+ * A vez é reservada no banco: com várias instâncias serverless (e ~100 painéis abertos) só uma
+ * sincroniza por intervalo — cada sincronização são 2 requisições ao Pulse Direct para todo mundo.
+ */
 export async function syncIfStale(maxAge = SYNC_MS) {
   try {
-    const last = Number(await getMeta('last_sync')) || 0;
-    if (Date.now() - last > maxAge) await syncUsers();
+    const t = Date.now();
+    const [vez] = await sql`INSERT INTO meta (key, value) VALUES ('last_sync', ${String(t)})
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value
+      WHERE COALESCE(NULLIF(meta.value, '')::bigint, 0) < ${t - maxAge}
+      RETURNING key`;
+    if (vez) await syncUsers();
   } catch (e) {
     console.error('[sync] falhou:', e.message);
   }
@@ -175,18 +183,6 @@ export async function reconcile(agents, fetchedAt) {
     }
   }
   return { changed };
-}
-
-/** Verifica um único atendente no Pulse Direct (usado pelo painel do próprio atendente). */
-export async function reconcileUser(user, maxAge = 60_000) {
-  if (!user.crm_user_id || Date.now() - (Number(user.crm_checked_at) || 0) < maxAge) return;
-  try {
-    const fetchedAt = Date.now();
-    const agent = await crm.getAgent(user.crm_user_id);
-    await reconcile([agent], fetchedAt);
-  } catch (e) {
-    console.error('[reconcile] falhou:', e.message);
-  }
 }
 
 const sameArr = (a, b) => (a || []).join(',') === (b || []).join(',');
