@@ -295,10 +295,14 @@ export class ClientePulse {
     return r?.id ? conversa(r) : null;
   }
 
-  /** Equalização: devolve a conversa para a fila da equipe (transferência para a própria equipe, sem atendente). Nunca repetida. */
-  async devolverParaFila(conversaId, equipeId) {
+  /**
+   * Equalização: tira o atendente da conversa, que fica pendente na fila da mesma equipe. Nunca repetida.
+   * Usa a alteração parcial (userId nulo, só o campo UserId). A transferência para a própria equipe
+   * (PUT /v1/session/{id}/transfer, type DEPARTMENT) foi testada em produção e MANTÉM o atendente.
+   */
+  async devolverParaFila(conversaId) {
     if (!this.permitirDevolver) throw new DevolucaoBloqueada();
-    const r = await this.chamar('PUT', 'chat', `/v1/session/${encodeURIComponent(conversaId)}/transfer`, [], { type: 'DEPARTMENT', newDepartmentId: equipeId });
+    const r = await this.chamar('PUT', 'chat', `/v2/session/${encodeURIComponent(conversaId)}/partial`, [], { userId: null, fields: ['UserId'] });
     return r?.id ? conversa(r) : null;
   }
 

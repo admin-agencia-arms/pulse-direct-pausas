@@ -809,7 +809,8 @@ export class Distribuidor {
     });
     try {
       for (const c of alvo) {
-        if (pulse.requisicoesRestantes() < 2 + RESERVA_REQ) { parou = 'Sem orçamento de requisições agora; rode de novo em alguns minutos.'; break; }
+        // 3 requisições por conversa: conferir antes, devolver, conferir depois
+        if (pulse.requisicoesRestantes() < 3 + RESERVA_REQ) { parou = 'Sem orçamento de requisições agora; rode de novo em alguns minutos.'; break; }
         try {
           const atual = await pulse.obterConversa(c.conversaId);
           if (!atual || atual.status !== 'PENDING' || atual.userId !== c.userId || atual.equipeId !== c.equipeId) {
@@ -818,11 +819,14 @@ export class Distribuidor {
             await registrar(c, 'ignorado', 'A conversa mudou antes da devolução (foi atendida, mudou de dono ou de equipe).');
             continue;
           }
-          const depois = (await pulse.devolverParaFila(c.conversaId, c.equipeId)) ?? (await pulse.obterConversa(c.conversaId));
+          await pulse.devolverParaFila(c.conversaId);
+          // confere de verdade (não confia só na resposta): sem atendente, pendente e na mesma equipe
+          const depois = await pulse.obterConversa(c.conversaId);
           if (depois) await this.estado.aplicarConversas([depois], { inicioDia });
-          if (depois?.userId) {
-            await registrar(c, 'erro', 'O Pulse Direct manteve o atendente depois da transferência.');
-            parou = 'O Pulse Direct manteve o atendente depois da transferência para a equipe. Parei para não repetir nas outras conversas.';
+          if (!depois || depois.userId || depois.status !== 'PENDING' || depois.equipeId !== c.equipeId) {
+            const viu = !depois ? 'a conversa sumiu' : depois.userId ? 'manteve o atendente' : `ficou ${depois.status} na equipe ${this.nomeEquipe(await this.carregar(), depois.equipeId)}`;
+            await registrar(c, 'erro', `Depois da devolução o Pulse Direct ${viu}.`);
+            parou = `Depois da devolução o Pulse Direct ${viu}. Parei para não repetir nas outras conversas.`;
             break;
           }
           await registrar(c, 'devolvido', textoMotivo[c.motivo] ?? c.motivo);

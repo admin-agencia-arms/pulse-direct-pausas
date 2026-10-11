@@ -286,7 +286,7 @@ caso('equalização (prévia): pendentes acima do teto e de quem está offline h
     assert.equal(g.beto.conversas.length, 6, 'só as pendentes; as 2 em atendimento ficam');
     assert.equal(plano.total, 11);
     assert.equal(plano.ignoradas.filter((x) => x.userId === 'solo' && /única pessoa/.test(x.detalhe)).length, 3);
-    assert.equal(c.pulse.transferencias.length, 0, 'a prévia não mexe em nada');
+    assert.equal(c.pulse.parciais.length + c.pulse.transferencias.length, 0, 'a prévia não mexe em nada');
   } finally {
     await limparZe();
     await c.fechar();
@@ -307,6 +307,8 @@ caso('equalização (execução): devolve só o confirmado, reconfere cada uma, 
     assert.equal(r.feitas, ids.length - 1);
     assert.equal(r.mudaram, 1);
     assert.equal(r.foraDoPlano, 1, 'conversa em atendimento pedida por fora do plano é ignorada');
+    assert.equal(c.pulse.transferencias.length, 0, 'não usa a transferência (no Pulse Direct ela mantém o atendente)');
+    assert.ok(c.pulse.parciais.every((x) => x.userId === null && JSON.stringify(x.fields) === '["UserId"]'), 'só limpa o atendente');
     assert.equal(c.pulse.abertasDe('ana'), 15);
     assert.equal(c.pulse.abertasDe('beto'), 3, 'as 2 em atendimento e a que ele pegou');
     assert.equal(c.pulse.conversas.get(mudou).userId, 'beto');
@@ -325,12 +327,12 @@ caso('equalização: se o Pulse Direct mantiver o atendente, para na primeira', 
   try {
     await c.config({ ligado: true, equipes: { A: true } });
     await c.d.ciclo({ origem: 'manual' });
-    c.pulse.transferenciaMantemDono = true;
+    c.pulse.parcialIgnoraUserId = true;
     const plano = await c.d.planoEqualizacao();
     const r = await c.d.executarEqualizacao(plano.grupos.flatMap((g) => g.conversas.map((x) => x.conversaId)), 'Admin');
     assert.equal(r.feitas, 0);
     assert.match(r.parou, /manteve o atendente/);
-    assert.equal(c.pulse.transferencias.length, 1);
+    assert.equal(c.pulse.parciais.length, 1, 'parou na primeira');
   } finally {
     await c.fechar();
   }
