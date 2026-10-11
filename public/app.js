@@ -855,7 +855,14 @@ async function viewDistribuicao(page) {
     page.querySelector('#d-teto').textContent = d.config.teto;
     page.querySelector('#d-atualizado').textContent = d.ultimoCicloOkEm ? `Atualizado ${haQuanto(d.ultimoCicloOkEm)}` : 'Carregando…';
     const ev = d.gatilhos.evento, ag = d.gatilhos.agendador;
-    const semGatilho = !ev || now() - ev > 10 * 60_000;
+    // eventos: estado da assinatura no Pulse Direct (não o horário do último evento: sem conversa nova, não chega evento)
+    const eventosLigados = Boolean(d.eventos?.ligados);
+    const agendadorAtivo = Boolean(ag) && now() - ag < 5 * 60_000;
+    const gatilhos = [
+      `Eventos do Pulse Direct: <b>${eventosLigados ? `ligados${ev ? ` · último ${haQuanto(ev)}` : ' · nenhum evento ainda'}` : 'desligados'}</b>`,
+      `Agendador: <b>${agendadorAtivo ? `a cada minuto · último ${haQuanto(ag)}` : ag ? `parado (último ${haQuanto(ag)})` : 'não configurado'}</b>`,
+    ];
+    const soComTela = !eventosLigados && !agendadorAtivo;
     page.querySelector('#d-status').innerHTML = `
       <div class="card d-status ${d.ligado ? 'on' : 'off'}">
         <div class="d-status-main">
@@ -866,10 +873,10 @@ async function viewDistribuicao(page) {
             : `Veja na aba Registro o que o sistema faria. ${d.resumo.equipesIncluidas} equipe(s) incluída(s).`}</div>
         </div>
         <div class="d-status-side">
-          <div class="small muted">Gatilho por eventos: <b>${ev ? haQuanto(ev) : 'não configurado'}</b>${ag ? ` · Agendador: <b>${haQuanto(ag)}</b>` : ''}</div>
-          ${d.ligado && semGatilho ? '<div class="small" style="color:var(--warn)">Sem eventos recentes: a distribuição só roda com esta tela aberta.</div>' : ''}
+          ${gatilhos.map((g) => `<div class="small muted">${g}</div>`).join('')}
+          ${d.ligado && soComTela ? '<div class="small" style="color:var(--warn)">Sem eventos nem agendador: a distribuição só roda com esta tela aberta.</div>' : ''}
           <div class="d-status-btns">
-            ${!ev && d.eventosConfiguravel ? '<button class="btn sm" id="d-eventos">Ligar eventos do Pulse Direct</button>' : ''}
+            ${!eventosLigados && d.eventosConfiguravel ? '<button class="btn sm" id="d-eventos">Ligar eventos do Pulse Direct</button>' : ''}
             <button class="btn ${d.ligado ? 'danger-ghost' : 'primary'}" id="d-ligar">${d.ligado ? 'Desligar distribuição' : 'Ligar distribuição automática'}</button>
           </div>
         </div>
@@ -1173,9 +1180,21 @@ async function viewDistribuicao(page) {
       } catch (err) { toast(err.message, 'error'); }
     };
 
+    // as duas chaves andam juntas: quem desliga a do Pulse Direct quase sempre quer que o sistema assuma
+    const chkIncluir = m.el.querySelector('#d-incluir'), chkNativa = m.el.querySelector('#d-nativa');
+    chkNativa.addEventListener('change', () => { if (!chkNativa.checked) chkIncluir.checked = true; });
+    // só com a automática LIGADA faz sentido desligar a do Pulse Direct ao incluir (desligada, ela só simula)
+    chkIncluir.addEventListener('change', () => { if (chkIncluir.checked && data.ligado) chkNativa.checked = false; });
+
     m.el.querySelector('form').onsubmit = async (ev) => {
       ev.preventDefault();
-      const body = { nome: m.el.querySelector('#d-nome').value, incluir: m.el.querySelector('#d-incluir').checked, distribuicaoNativa: m.el.querySelector('#d-nativa').checked };
+      const body = { nome: m.el.querySelector('#d-nome').value, incluir: chkIncluir.checked, distribuicaoNativa: chkNativa.checked };
+      if (!body.distribuicaoNativa && (!body.incluir || !data.ligado)) {
+        const motivo = !body.incluir
+          ? `a distribuição do Pulse Direct desligada e a equipe <b>${esc(e.nome)}</b> fora da distribuição automática`
+          : `a distribuição do Pulse Direct desligada e a distribuição automática <b>desligada</b> (ela só simula)`;
+        if (!(await confirmDialog('Ninguém vai distribuir esta equipe', `Com ${motivo}, as conversas ficam paradas na fila até um atendente pegar manualmente. Salvar assim mesmo?`, 'Salvar assim mesmo'))) return;
+      }
       if (body.distribuicaoNativa !== e.distribuicaoNativa
         && !(await confirmDialog(`${body.distribuicaoNativa ? 'Ligar' : 'Desligar'} a distribuição do Pulse Direct?`, `Isso muda a configuração da equipe <b>${esc(e.nome)}</b> no próprio Pulse Direct, na hora.`, 'Confirmar'))) return;
       try {

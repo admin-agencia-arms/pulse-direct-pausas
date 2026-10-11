@@ -37,6 +37,10 @@ const CONFERENCIA_MAX_MS = 3_000;
 const CORRECAO_MS = 60_000;
 const BLOQUEIO_MS = 30 * 60_000;
 const NOME_ASSINATURA = 'Gestão de Pausas · Distribuição automática';
+/** Caminho da URL de eventos deste sistema (a assinatura no Pulse Direct aponta para ele). */
+const CAMINHO_EVENTO = '/api/distribuicao/evento';
+/** De quanto em quanto tempo reconfere no Pulse Direct se a assinatura de eventos continua lá. */
+const CONFERIR_EVENTOS_MS = 10 * 60_000;
 
 const msg = (e) => (e instanceof Error ? e.message : String(e));
 
@@ -82,6 +86,8 @@ export class Distribuidor {
       semVaga: v.sem_vaga ?? {},
       gerenciadas: v.gerenciadas ?? [],
       gatilhos: { evento: v.gatilho_evento ?? null, agendador: v.gatilho_agendador ?? null },
+      // assinatura de eventos no Pulse Direct (conferida a cada 10 min; gravada à parte, fora do salvar())
+      eventos: v.eventos ?? { ligados: false, conferidoEm: 0 },
       atendentesLidosEm: 0,
     };
   }
@@ -203,6 +209,7 @@ export class Distribuidor {
       st.equipes.lidasEm = agora;
     }
     await this.lerAtendentes(st, pulse);
+    if (agora - (st.eventos.conferidoEm ?? 0) >= CONFERIR_EVENTOS_MS) await this.conferirEventos(st, pulse);
     const rec = st.reconciliacao;
     if (rec.emAndamento || !rec.ultimaEm || agora - rec.ultimaEm >= RECONCILIAR_MS || st.marca === null) {
       await this.reconciliar(st, pulse, inicioDia, prazo);
@@ -214,6 +221,28 @@ export class Distribuidor {
       this.moverMarca(st, lote.ultimo, pulse);
       if (!lote.completo) await this.log.trilha('incremental_parcial', `Muita alteração de uma vez (${lote.conversas.length}); continua no próximo ciclo.`);
     }
+  }
+
+  /**
+   * A assinatura de eventos deste sistema ainda existe e está ativa no Pulse Direct?
+   * O estado da tela vem daqui (e não do horário do último evento: num período sem conversas
+   * novas não chega evento nenhum, e isso não quer dizer que os eventos estão desligados).
+   */
+  async conferirEventos(st, pulse) {
+    const agora = this.agora();
+    try {
+      const nossa = (await pulse.listarAssinaturas()).find((s) => String(s?.url ?? '').includes(CAMINHO_EVENTO));
+      const ligados = Boolean(nossa) && nossa.enabled !== false;
+      if (st.eventos.conferidoEm && st.eventos.ligados && !ligados) {
+        await this.log.aviso('eventos_desligados', 'A assinatura de eventos deste sistema não está mais ativa no Pulse Direct. Ligue de novo na aba Distribuição.');
+      }
+      st.eventos = { ligados, conferidoEm: agora };
+    } catch (e) {
+      // sem conseguir conferir agora, mantém o que sabia e tenta no próximo intervalo
+      st.eventos = { ...st.eventos, conferidoEm: agora };
+      await this.log.trilha('eventos_conferencia_falhou', msg(e), undefined, 'aviso');
+    }
+    await this.estado.gravarEstado({ eventos: st.eventos }, agora);
   }
 
   /** Data no futuro (relógio errado) não move a marca, senão leituras seguintes pulariam conversas. */
@@ -393,6 +422,20 @@ export class Distribuidor {
       paradas.push(`${e.nome} (${daEquipe.length}${online ? '' : ', ninguém online'})`);
     }
     if (paradas.length) avisos.push({ chave: 'filas_paradas', texto: `Conversas esperando há mais de ${st.config.alertaFilaMin} min: ${paradas.join(', ')}.` });
+
+    // equipe sem ninguém distribuindo: a do Pulse Direct desligada e a automática não cobre
+    // (equipe fora da automática, ou a automática desligada, só simulando)
+    const incluidasSet = new Set(incluidas);
+    const orfas = st.equipes.lista
+      .filter((e) => !e.distribuicaoNativa && (!st.config.ligado || !incluidasSet.has(e.id)) && comHumano.has(e.id))
+      .map((e) => ({ e, n: fila.filter((c) => c.equipeId === e.id).length }))
+      .filter((x) => x.n > 0);
+    if (orfas.length) {
+      avisos.push({
+        chave: `sem_distribuicao:${orfas.map((x) => x.e.id).sort().join(',')}`,
+        texto: `Ninguém distribui ${orfas.map((x) => `${x.e.nome} (${x.n} na fila)`).join(', ')}: a distribuição do próprio Pulse Direct está desligada e ${st.config.ligado ? 'a equipe não está incluída na distribuição automática' : 'a distribuição automática está desligada (só simulando)'}. As conversas só saem da fila se um atendente pegar manualmente.`,
+      });
+    }
     return { ids: new Set(st.gerenciadas), avisos };
   }
 
@@ -793,8 +836,13 @@ export class Distribuidor {
     try {
       const existentes = await pulse.listarAssinaturas();
       const ja = existentes.find((s) => s?.url === urlEvento);
-      if (ja) return { criada: false, ativa: ja.enabled !== false };
+      const marcar = (ligados) => this.estado.gravarEstado({ eventos: { ligados, conferidoEm: this.agora() } }, this.agora());
+      if (ja) {
+        await marcar(ja.enabled !== false);
+        return { criada: false, ativa: ja.enabled !== false };
+      }
       await pulse.criarAssinatura(NOME_ASSINATURA, urlEvento);
+      await marcar(true);
       await this.log.info('gatilho_eventos', `${ator} ligou o gatilho por eventos do Pulse Direct (novas conversas, atualizações e encerramentos).`);
       return { criada: true, ativa: true };
     } finally {
@@ -874,6 +922,7 @@ export class Distribuidor {
       concluidasCarregadas: Boolean(st.concluidas.carregadas),
       leituraCompleta: Boolean(st.reconciliacao.ultimaEm),
       gatilhos: st.gatilhos,
+      eventos: st.eventos,
       avisos: st.avisos.map((a) => a.texto),
       resumo: {
         atendentesEmEquipe: emEquipe.length,
