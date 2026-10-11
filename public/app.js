@@ -1291,7 +1291,6 @@ async function viewDistribuicao(page) {
         ${Object.keys(ignoradas).length ? `<p class="hint" style="margin-top:12px">Ficam como estão: ${Object.entries(ignoradas).map(([d, k]) => `${k} (${esc(d)})`).join(' · ')}.</p>` : ''}
         <div class="modal-foot"><span class="small muted" style="margin-right:auto">${n} conversa(s) selecionada(s)</span>
           <button class="btn" data-x>Cancelar</button>
-          <button class="btn" id="eq-teste" ${n ? '' : 'disabled'}>Testar com 1 conversa</button>
           <button class="btn primary" id="eq-tudo" ${n ? '' : 'disabled'}>Devolver ${Math.min(n, 100)} à fila</button></div>`;
       m.el.querySelectorAll('[data-x]').forEach((b) => (b.onclick = m.close));
       m.el.querySelectorAll('[data-u]').forEach((b) => b.addEventListener('change', () => { if (b.checked) fora.delete(b.dataset.u); else fora.add(b.dataset.u); desenhar(); }));
@@ -1307,15 +1306,10 @@ async function viewDistribuicao(page) {
           await load();
         } catch (err) { toast(err.message, 'error'); }
       };
-      m.el.querySelector('#eq-teste')?.addEventListener('click', (e) => {
-        const g = plano.grupos.find((x) => !fora.has(x.userId));
-        rodar(e.currentTarget, [g.conversas[0].conversaId], 'Testar com 1 conversa',
-          `A conversa pendente mais antiga de <b>${esc(titleCase(g.atendente))}</b> (${esc(g.conversas[0].equipe)}) volta para a fila da equipe. Confira depois no Pulse Direct se ela ficou na fila, sem atendente. Para testar com outra pessoa, desmarque as de cima.`);
-      });
       m.el.querySelector('#eq-tudo')?.addEventListener('click', (e) => {
         const ids = escolhidas();
         rodar(e.currentTarget, ids.slice(0, 100), `Devolver ${Math.min(ids.length, 100)} conversa(s) à fila?`,
-          `Cada uma é conferida no Pulse Direct antes (continua pendente, com o mesmo atendente e na mesma equipe). Se o Pulse Direct não tirar o atendente, para na primeira.${ids.length > 100 ? ' Vão as primeiras 100; rode de novo para o resto.' : ''}`);
+          `As conversas saem dos atendentes marcados e voltam para a fila da própria equipe, onde a distribuição entrega primeiro as mais antigas. Cada uma é conferida no Pulse Direct antes e depois.${ids.length > 100 ? ' Vão as primeiras 100; rode de novo para o resto.' : ''}`);
       });
     };
     desenhar();
