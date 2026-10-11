@@ -4,7 +4,7 @@
   "outputDirectory": "public",
   "regions": ["gru1"],
   "functions": {
-    "api/index.js": { "maxDuration": 30, "includeFiles": "db/distribuicao.sql" }
+    "api/index.js": { "maxDuration": 60, "includeFiles": "db/distribuicao.sql" }
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },

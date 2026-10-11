@@ -39,8 +39,6 @@ async function call(method, path, body) {
 
 export const listAgents = () => call('GET', '/v1/agent');
 export const listDepartments = () => call('GET', '/v2/department');
-export const getAgent = (userId) => call('GET', `/v1/agent/${userId}`);
-
 /**
  * Altera apenas a disponibilidade do atendente ('AVAILABLE' | 'UNAVAILABLE').
  * Nunca altera o status (Active/Blocked): bloquear impediria o login no Pulse Direct.
