@@ -104,6 +104,22 @@ export function criarEstado(sql) {
         WHERE user_id IS NOT NULL AND status = ANY(${abertos}) GROUP BY 1, 2, 3`;
     },
 
+    /** Abertas com dono, uma a uma (para a equalização). */
+    abertasComDono() {
+      return sql`SELECT id, status, equipe_id, user_id, criada_em, tipo FROM dist_conversas
+        WHERE user_id IS NOT NULL AND status = ANY(${abertos})`;
+    },
+
+    /**
+     * Última atividade de cada atendente na Gestão de Pausas (crm_user_id → ms): fim do último período,
+     * ou agora se tem jornada aberta (está em atendimento ou em pausa, mesmo indisponível no Pulse).
+     */
+    async ultimaAtividadePausas(agora) {
+      const linhas = await sql`SELECT u.crm_user_id, max(COALESCE(i.ended_at, ${agora})) AS em
+        FROM users u JOIN intervals i ON i.user_id = u.id WHERE u.crm_user_id IS NOT NULL GROUP BY 1`;
+      return new Map(linhas.map((l) => [l.crm_user_id, Number(l.em)]));
+    },
+
     /** Esperando na fila de uma equipe, sem atendente. */
     fila() {
       return sql`SELECT id, equipe_id, criada_em FROM dist_conversas

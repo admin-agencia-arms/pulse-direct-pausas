@@ -16,6 +16,8 @@ export class PulseFalso {
     this.equipes = new Map(); // id → { id, nome, distribuicao }
     this.conversas = new Map();
     this.assinaturas = [];
+    this.transferencias = [];
+    this.transferenciaMantemDono = false;
     this.pedidos = [];
     this.puts = [];
     this.violacoes = [];
@@ -39,8 +41,18 @@ export class PulseFalso {
     this.equipes.set(id, { id, nome, distribuicao });
   }
 
-  agente(userId, equipes, disponivel = true, nome = `Atendente ${userId}`) {
-    this.agentes.set(userId, { userId, nome, email: `${userId}@teste.com`, disponivel, equipes: [...equipes] });
+  agente(userId, equipes, disponivel = true, nome = `Atendente ${userId}`, alteradoEm = Date.now()) {
+    this.agentes.set(userId, { userId, nome, email: `${userId}@teste.com`, disponivel, equipes: [...equipes], alteradoEm });
+  }
+
+  /** Transferência para equipe: sai do atendente e volta à fila (ou, simulando um Pulse diferente, mantém o dono). */
+  transferir(conversaId, corpo) {
+    const c = this.conversas.get(conversaId);
+    this.transferencias.push({ conversaId, ...corpo });
+    if (!c) return [404, { error: true, text: 'Conversa não encontrada' }];
+    if (corpo?.type !== 'DEPARTMENT' || !this.equipes.has(corpo.newDepartmentId)) return [400, { error: true, text: 'Transferência inválida' }];
+    this.mudar(c, { departmentId: corpo.newDepartmentId, ...(this.transferenciaMantemDono ? {} : { userId: null }), status: 'PENDING' });
+    return [200, this.dto(c)];
   }
 
   novaConversa(campos = {}) {
@@ -139,7 +151,7 @@ export class PulseFalso {
       if (this.falhar500 > 0) { this.falhar500--; return responder(500, { error: true }); }
       const agentesDto = () => [...this.agentes.values()].map((a) => ({
         id: `ag-${a.userId}`, userId: a.userId, name: a.nome, email: a.email, profile: 'AGENT',
-        availability: a.disponivel ? 'AVAILABLE' : 'UNAVAILABLE',
+        availability: a.disponivel ? 'AVAILABLE' : 'UNAVAILABLE', updatedAt: this.data(a.alteradoEm),
         departments: a.equipes.map((d) => ({ departmentId: d, isAgent: true, isSupervisor: false })),
       }));
       if (req.method === 'GET' && p === '/core/v1/agent') return responder(200, agentesDto());
@@ -199,6 +211,11 @@ export class PulseFalso {
         if (this.falhar429NoPut > 0) { this.falhar429NoPut--; return responder(429, { error: true }); }
         const corpo = await this.corpo(req);
         const [status, r] = this.atribuir(atribuicao[1], corpo?.userId);
+        return responder(status, r);
+      }
+      const transferencia = /^\/chat\/v1\/session\/([^/]+)\/transfer$/.exec(p);
+      if (req.method === 'PUT' && transferencia) {
+        const [status, r] = this.transferir(transferencia[1], await this.corpo(req));
         return responder(status, r);
       }
       responder(404, { error: true, text: `rota falsa inexistente: ${req.method} ${p}` });

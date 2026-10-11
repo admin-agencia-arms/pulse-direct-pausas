@@ -238,6 +238,104 @@ caso('equipe com fila e sem ninguém distribuindo vira aviso', async () => {
   }
 });
 
+// ---------- equalização ----------
+
+const HORA = 3_600_000;
+/** Ana online com 20 (12 pendentes); Beto offline há 30 h; Carla offline há 2 h; Dani com vaga; Solo sozinho na equipe S; Zé offline no Pulse mas em pausa na Gestão de Pausas. */
+function equalizar(p) {
+  p.equipe('A', 'Exames');
+  p.equipe('S', 'Solo');
+  p.agente('ana', ['A'], true, 'Ana');
+  p.agente('beto', ['A'], false, 'Beto', Date.now() - 30 * HORA);
+  p.agente('carla', ['A'], false, 'Carla', Date.now() - 2 * HORA);
+  p.agente('dani', ['A'], true, 'Dani');
+  p.agente('solo', ['S'], false, 'Solo', Date.now() - 48 * HORA);
+  p.agente('ze', ['A'], false, 'Zé', Date.now() - 30 * HORA);
+  for (let i = 0; i < 20; i++) p.novaConversa({ departmentId: 'A', userId: 'ana', status: i % 5 < 3 ? 'PENDING' : 'IN_PROGRESS' });
+  for (let i = 0; i < 8; i++) p.novaConversa({ departmentId: 'A', userId: 'beto', status: i < 6 ? 'PENDING' : 'IN_PROGRESS' });
+  for (let i = 0; i < 4; i++) p.novaConversa({ departmentId: 'A', userId: 'carla' });
+  for (let i = 0; i < 3; i++) p.novaConversa({ departmentId: 'A', userId: 'dani', status: 'IN_PROGRESS' });
+  for (let i = 0; i < 3; i++) p.novaConversa({ departmentId: 'S', userId: 'solo' });
+  for (let i = 0; i < 2; i++) p.novaConversa({ departmentId: 'A', userId: 'ze' });
+}
+
+async function comZeEmPausa(c) {
+  const t = Date.now();
+  const [u] = await c.sql`INSERT INTO users (email, name, crm_user_id, created_at, updated_at) VALUES ('ze.equalizacao@teste.com', 'Zé', 'ze', ${t}, ${t}) RETURNING id`;
+  await c.sql`INSERT INTO intervals (user_id, kind, reason_name, started_at) VALUES (${u.id}, 'pause', 'Almoço', ${t - 10 * 60_000})`;
+  return async () => {
+    await c.sql`DELETE FROM intervals WHERE user_id = ${u.id}`;
+    await c.sql`DELETE FROM users WHERE id = ${u.id}`;
+  };
+}
+
+caso('equalização (prévia): pendentes acima do teto e de quem está offline há 24 h; nada em atendimento', async () => {
+  const c = await cenario({ configurar: equalizar });
+  const limparZe = await comZeEmPausa(c);
+  try {
+    await c.config({ ligado: true, equipes: { A: true } });
+    await c.d.ciclo({ origem: 'manual' });
+    const plano = await c.d.planoEqualizacao();
+    const g = Object.fromEntries(plano.grupos.map((x) => [x.userId, x]));
+    assert.deepEqual(Object.keys(g).sort(), ['ana', 'beto'], 'Carla (2 h) e Zé (em pausa na Gestão de Pausas) ficam; Solo é a única da equipe');
+    assert.equal(g.ana.motivo, 'acima_do_teto');
+    const pendentesAna = [...c.pulse.conversas.values()].filter((x) => x.userId === 'ana' && x.status === 'PENDING').map((x) => x.id);
+    assert.deepEqual(g.ana.conversas.map((x) => x.conversaId), pendentesAna.slice(-5), 'as 5 pendentes mais novas (volta a 15)');
+    assert.equal(g.beto.motivo, 'offline');
+    assert.ok(g.beto.offlineHoras >= 30);
+    assert.equal(g.beto.conversas.length, 6, 'só as pendentes; as 2 em atendimento ficam');
+    assert.equal(plano.total, 11);
+    assert.equal(plano.ignoradas.filter((x) => x.userId === 'solo' && /única pessoa/.test(x.detalhe)).length, 3);
+    assert.equal(c.pulse.transferencias.length, 0, 'a prévia não mexe em nada');
+  } finally {
+    await limparZe();
+    await c.fechar();
+  }
+});
+
+caso('equalização (execução): devolve só o confirmado, reconfere cada uma, e a distribuição reparte', async () => {
+  const c = await cenario({ configurar: equalizar });
+  try {
+    await c.config({ ligado: true, equipes: { A: true } });
+    await c.d.ciclo({ origem: 'manual' });
+    const plano = await c.d.planoEqualizacao();
+    const ids = plano.grupos.flatMap((g) => g.conversas.map((x) => x.conversaId));
+    const mudou = plano.grupos.find((g) => g.userId === 'beto').conversas[0].conversaId;
+    c.pulse.mudar(c.pulse.conversas.get(mudou), { status: 'IN_PROGRESS' }); // Beto voltou e atendeu essa
+    const emAtendimentoAna = [...c.pulse.conversas.values()].find((x) => x.userId === 'ana' && x.status === 'IN_PROGRESS').id;
+    const r = await c.d.executarEqualizacao([...ids, emAtendimentoAna], 'Admin');
+    assert.equal(r.feitas, ids.length - 1);
+    assert.equal(r.mudaram, 1);
+    assert.equal(r.foraDoPlano, 1, 'conversa em atendimento pedida por fora do plano é ignorada');
+    assert.equal(c.pulse.abertasDe('ana'), 15);
+    assert.equal(c.pulse.abertasDe('beto'), 3, 'as 2 em atendimento e a que ele pegou');
+    assert.equal(c.pulse.conversas.get(mudou).userId, 'beto');
+    assert.equal(c.pulse.conversas.get(emAtendimentoAna).userId, 'ana');
+    await c.d.ciclo({ origem: 'manual' });
+    assert.deepEqual(c.pulse.violacoes, []);
+    assert.ok(c.pulse.puts.length > 0 && c.pulse.puts.every((p) => p.userId === 'dani'), 'quem tem vaga e está online recebe');
+    assert.ok((await c.decisoes()).some((d) => d.modo === 'equalizacao' && d.resultado === 'devolvido'));
+  } finally {
+    await c.fechar();
+  }
+});
+
+caso('equalização: se o Pulse Direct mantiver o atendente, para na primeira', async () => {
+  const c = await cenario({ configurar: equalizar });
+  try {
+    await c.config({ ligado: true, equipes: { A: true } });
+    await c.d.ciclo({ origem: 'manual' });
+    c.pulse.transferenciaMantemDono = true;
+    const plano = await c.d.planoEqualizacao();
+    const r = await c.d.executarEqualizacao(plano.grupos.flatMap((g) => g.conversas.map((x) => x.conversaId)), 'Admin');
+    assert.equal(r.feitas, 0);
+    assert.match(r.parou, /manteve o atendente/);
+    assert.equal(c.pulse.transferencias.length, 1);
+  } finally {
+    await c.fechar();
+  }
+});
+
 // ---------- gatilhos, trava e leitura ----------
 
 caso('ciclos não se sobrepõem e, exceto o manual, respeitam o intervalo mínimo', async () => {

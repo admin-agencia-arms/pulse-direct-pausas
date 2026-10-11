@@ -51,6 +51,8 @@ const CONFERIR_EVENTOS_MS = 10 * 60_000;
  * sistema liga/desliga a distribuição do Pulse numa equipe, vale o que ele gravou por este tempo.
  */
 const NATIVA_FORCADA_MS = 10 * 60_000;
+/** Equalização: atendente offline há mais que isso tem as conversas pendentes devolvidas à fila. */
+export const HORAS_OFFLINE = 24;
 
 const msg = (e) => (e instanceof Error ? e.message : String(e));
 
@@ -120,11 +122,12 @@ export class Distribuidor {
     return { ...CONFIG_PADRAO, ...(config ?? {}), equipes: { ...(config?.equipes ?? {}) } };
   }
 
-  async novoPulse(permitirAtribuir, pendentes) {
+  async novoPulse(permitirAtribuir, pendentes, { permitirDevolver = false } = {}) {
     const instantes = await this.estado.instantesChamadas(this.agora() - 300_000);
     let ultimoAviso429 = 0;
     return this.criarPulse({
       permitirAtribuir,
+      permitirDevolver,
       instantes,
       aoChamar: (c) => {
         pendentes.push(this.estado.registrarChamada({ em: Date.now(), ...c }).catch(() => {}));
@@ -306,7 +309,7 @@ export class Distribuidor {
       await this.log.info('atendentes_carregados', `${novos.length} usuários lidos do Pulse Direct, ${emEquipe} atendem alguma equipe.`);
     }
     st.fotoAtendentes = foto;
-    st.atendentes = novos.map((a) => ({ userId: a.userId, nome: a.nome, email: a.email ?? null, disponivel: a.disponivel, equipes: a.equipes }));
+    st.atendentes = novos.map((a) => ({ userId: a.userId, nome: a.nome, email: a.email ?? null, disponivel: a.disponivel, equipes: a.equipes, alteradoEm: a.alteradoEm ?? null }));
   }
 
   /** Releitura completa das abertas (em pedaços, se não couber num ciclo): corrige o que a incremental tenha perdido. */
@@ -723,6 +726,121 @@ export class Distribuidor {
   async aoAgendador() {
     await this.estado.gravarEstado({ gatilho_agendador: this.agora() }, this.agora());
     return this.ciclo({ origem: 'agendador', prazoMs: 22_000 });
+  }
+
+  // ---------- equalização (devolver à fila o que está preso) ----------
+
+  /**
+   * O que a equalização devolveria à fila, sem mexer em nada. Só conversas PENDENTES (o atendente
+   * ainda não começou); em atendimento nunca saem.
+   * - atendente offline há mais de `horasOffline` (ou que não existe mais): todas as pendentes;
+   * - atendente acima do teto: as pendentes mais novas, até voltar ao teto (as mais antigas ficam com ele).
+   * Fica de fora conversa de equipe sem outro atendente (voltaria para a mesma pessoa) ou que ninguém distribui.
+   */
+  async planoEqualizacao({ horasOffline = HORAS_OFFLINE } = {}) {
+    const st = await this.carregar();
+    const agora = this.agora();
+    const teto = st.config.teto;
+    const [abertas, atividade] = [await this.estado.abertasComDono(), await this.estado.ultimaAtividadePausas(agora)];
+    const atendentes = new Map(st.atendentes.map((a) => [a.userId, a]));
+    const membros = new Map();
+    for (const a of st.atendentes) for (const e of a.equipes) (membros.get(e) ?? membros.set(e, new Set()).get(e)).add(a.userId);
+    const equipes = new Map(st.equipes.lista.map((e) => [e.id, e]));
+    const gerenciadas = new Set(st.gerenciadas);
+    const distribuida = (id) => gerenciadas.has(id) || Boolean(equipes.get(id)?.distribuicaoNativa);
+
+    const porAtendente = new Map();
+    for (const c of abertas) (porAtendente.get(c.user_id) ?? porAtendente.set(c.user_id, []).get(c.user_id)).push(c);
+
+    const grupos = [];
+    const ignoradas = [];
+    for (const [userId, convs] of porAtendente) {
+      const a = atendentes.get(userId);
+      const pendentes = convs.filter((c) => c.status === 'PENDING' && c.equipe_id && c.tipo !== 'GROUP')
+        .sort((x, y) => (x.criada_em ?? 0) - (y.criada_em ?? 0));
+      const offlineDesde = a && !a.disponivel ? Math.max(a.alteradoEm ?? 0, atividade.get(userId) ?? 0) || null : null;
+      const offlineMs = !a ? Number.POSITIVE_INFINITY : offlineDesde ? agora - offlineDesde : 0;
+      let candidatas, motivo;
+      if (offlineMs >= horasOffline * 3_600_000) {
+        candidatas = pendentes;
+        motivo = a ? 'offline' : 'removido';
+      } else if (convs.length > teto) {
+        candidatas = pendentes.slice(-Math.min(convs.length - teto, pendentes.length));
+        motivo = 'acima_do_teto';
+      } else continue;
+      if (!candidatas.length) continue;
+      const grupo = {
+        userId, atendente: a?.nome ?? 'Usuário removido', motivo, abertas: convs.length, pendentes: pendentes.length,
+        offlineHoras: Number.isFinite(offlineMs) && offlineMs > 0 ? Math.floor(offlineMs / 3_600_000) : null, conversas: [],
+      };
+      for (const c of candidatas) {
+        const item = { conversaId: c.id, equipeId: c.equipe_id, equipe: this.nomeEquipe(st, c.equipe_id), criadaEm: c.criada_em ?? null };
+        const outros = [...(membros.get(c.equipe_id) ?? [])].filter((u) => u !== userId);
+        if (!outros.length) ignoradas.push({ ...item, userId, atendente: grupo.atendente, detalhe: 'única pessoa que atende a equipe' });
+        else if (!distribuida(c.equipe_id)) ignoradas.push({ ...item, userId, atendente: grupo.atendente, detalhe: 'ninguém distribui esta equipe' });
+        else grupo.conversas.push(item);
+      }
+      if (grupo.conversas.length) grupos.push(grupo);
+    }
+    grupos.sort((x, y) => y.conversas.length - x.conversas.length);
+    return { teto, horasOffline, geradoEm: agora, total: grupos.reduce((s, g) => s + g.conversas.length, 0), grupos, ignoradas };
+  }
+
+  /**
+   * Devolve à fila as conversas confirmadas pelo administrador (só as que ainda estão no plano).
+   * Antes de cada uma confere no Pulse Direct: pendente, com o mesmo atendente e na mesma equipe.
+   * Se o Pulse Direct mantiver o atendente depois da transferência, para tudo (comportamento inesperado).
+   */
+  async executarEqualizacao(ids, ator, { limite = 100 } = {}) {
+    const plano = await this.planoEqualizacao();
+    const pedidos = new Set(ids);
+    const alvo = plano.grupos.flatMap((g) => g.conversas.map((c) => ({ ...c, userId: g.userId, atendente: g.atendente, motivo: g.motivo })))
+      .filter((c) => pedidos.has(c.conversaId)).slice(0, limite);
+    const foraDoPlano = ids.length - alvo.length;
+    const pendentes = [];
+    const pulse = await this.novoPulse(false, pendentes, { permitirDevolver: true });
+    const inicioDia = inicioDoDia(this.agora(), this.fuso);
+    const textoMotivo = { offline: 'atendente offline', removido: 'usuário removido', acima_do_teto: 'atendente acima do teto' };
+    let feitas = 0, parou = null;
+    const falhas = [], mudaram = [];
+    const registrar = (c, resultado, detalhe) => this.salvarDecisao({
+      em: this.agora(), modo: 'equalizacao', conversaId: c.conversaId, equipeId: c.equipeId, equipe: c.equipe,
+      userId: c.userId, atendente: c.atendente, cargaAntes: 0, resultado, detalhe,
+    });
+    try {
+      for (const c of alvo) {
+        if (pulse.requisicoesRestantes() < 2 + RESERVA_REQ) { parou = 'Sem orçamento de requisições agora; rode de novo em alguns minutos.'; break; }
+        try {
+          const atual = await pulse.obterConversa(c.conversaId);
+          if (!atual || atual.status !== 'PENDING' || atual.userId !== c.userId || atual.equipeId !== c.equipeId) {
+            if (atual) await this.estado.aplicarConversas([atual], { inicioDia });
+            mudaram.push(c.conversaId);
+            await registrar(c, 'ignorado', 'A conversa mudou antes da devolução (foi atendida, mudou de dono ou de equipe).');
+            continue;
+          }
+          const depois = (await pulse.devolverParaFila(c.conversaId, c.equipeId)) ?? (await pulse.obterConversa(c.conversaId));
+          if (depois) await this.estado.aplicarConversas([depois], { inicioDia });
+          if (depois?.userId) {
+            await registrar(c, 'erro', 'O Pulse Direct manteve o atendente depois da transferência.');
+            parou = 'O Pulse Direct manteve o atendente depois da transferência para a equipe. Parei para não repetir nas outras conversas.';
+            break;
+          }
+          await registrar(c, 'devolvido', textoMotivo[c.motivo] ?? c.motivo);
+          feitas++;
+        } catch (e) {
+          falhas.push(`${String(c.conversaId).slice(0, 8)}: ${msg(e)}`);
+          await registrar(c, 'erro', msg(e));
+          if (e instanceof ErroPulse && e.passageira) { parou = `Pulse Direct instável (${msg(e)}).`; break; }
+        }
+      }
+    } finally {
+      await Promise.allSettled(pendentes);
+    }
+    const partes = [`${ator} devolveu ${feitas} conversa(s) pendente(s) à fila das equipes (equalização)`];
+    if (mudaram.length) partes.push(`${mudaram.length} mudaram antes e ficaram como estavam`);
+    if (falhas.length) partes.push(`${falhas.length} falharam`);
+    await (falhas.length || parou ? this.log.aviso : this.log.info).call(this.log, 'equalizacao', `${partes.join('; ')}.${parou ? ` ${parou}` : ''}`);
+    return { feitas, mudaram: mudaram.length, foraDoPlano, falhas, parou };
   }
 
   // ---------- ações de administrador ----------

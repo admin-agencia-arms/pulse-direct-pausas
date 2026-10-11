@@ -64,6 +64,8 @@ caso('só administrador acessa: sem login 401, usuário comum 403', async () => 
   assert.equal((await chamar(cookie, '/admin/distribuicao')).status, 403);
   assert.equal((await chamar(cookie, '/admin/distribuicao/ligar', { method: 'POST', body: { ligado: true } })).status, 403);
   assert.equal((await chamar(cookie, '/admin/distribuicao/equipes/A/membros', { method: 'PUT', body: { adicionar: ['bia'] } })).status, 403);
+  assert.equal((await chamar(cookie, '/admin/distribuicao/equalizar')).status, 403);
+  assert.equal((await chamar(cookie, '/admin/distribuicao/equalizar', { method: 'POST', body: { ids: ['x'] } })).status, 403);
 });
 
 caso('painel do admin: lê o Pulse Direct, mostra abertos por equipe e começa DESLIGADO', async () => {
@@ -90,6 +92,11 @@ caso('ações do admin: incluir equipe, mudar equipes de alguém, ligar/desligar
   assert.equal(r.status, 200);
   assert.deepEqual(pulse.agentes.get('bia').equipes, ['A', 'B']);
   r = await chamar(cookie, '/admin/distribuicao/atendentes/bia/equipes', { method: 'PUT', body: {} });
+  assert.equal(r.status, 400);
+  r = await chamar(cookie, '/admin/distribuicao/equalizar');
+  assert.equal(r.status, 200, 'prévia da equalização');
+  assert.ok(Array.isArray((await r.json()).grupos));
+  r = await chamar(cookie, '/admin/distribuicao/equalizar', { method: 'POST', body: { ids: [] } });
   assert.equal(r.status, 400);
   r = await chamar(cookie, '/admin/distribuicao/config', { method: 'PUT', body: { teto: 999 } });
   assert.equal(r.status, 400);
