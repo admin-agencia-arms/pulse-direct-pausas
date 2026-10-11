@@ -44,6 +44,11 @@ const NOME_ASSINATURA = 'Gestão de Pausas · Distribuição automática';
 const CAMINHO_EVENTO = '/api/distribuicao/evento';
 /** De quanto em quanto tempo reconfere no Pulse Direct se a assinatura de eventos continua lá. */
 const CONFERIR_EVENTOS_MS = 10 * 60_000;
+/**
+ * A listagem de equipes do Pulse Direct (/v2/department) tem cache de alguns minutos. Quando o próprio
+ * sistema liga/desliga a distribuição do Pulse numa equipe, vale o que ele gravou por este tempo.
+ */
+const NATIVA_FORCADA_MS = 10 * 60_000;
 
 const msg = (e) => (e instanceof Error ? e.message : String(e));
 
@@ -91,6 +96,8 @@ export class Distribuidor {
       gatilhos: { evento: v.gatilho_evento ?? null, agendador: v.gatilho_agendador ?? null },
       // assinatura de eventos no Pulse Direct (conferida a cada 10 min; gravada à parte, fora do salvar())
       eventos: v.eventos ?? { ligados: false, conferidoEm: 0 },
+      // {equipeId: {v, ate}}: gravado só pelas ações de administrador (fora do salvar())
+      nativaForcada: v.nativa_forcada ?? {},
       atendentesLidosEm: 0,
     };
   }
@@ -259,7 +266,22 @@ export class Distribuidor {
     st.atendentesLidosEm = this.agora();
   }
 
+  /** Grava no estado o que o sistema acabou de mudar no Pulse Direct (a listagem demora a refletir). */
+  async forcarNativa(mudancas) {
+    if (!mudancas.length) return;
+    const agora = this.agora();
+    const { nativa_forcada: atual } = await this.estado.lerEstado(['nativa_forcada']);
+    const mapa = Object.fromEntries(Object.entries(atual ?? {}).filter(([, o]) => o.ate > agora));
+    for (const [id, v] of mudancas) mapa[id] = { v, ate: agora + NATIVA_FORCADA_MS };
+    await this.estado.gravarEstado({ nativa_forcada: mapa }, agora);
+  }
+
   async registrarEquipes(st, novas) {
+    const agora = this.agora();
+    for (const e of novas) {
+      const o = st.nativaForcada[e.id];
+      if (o && o.ate > agora) e.distribuicaoNativa = o.v;
+    }
     for (const e of st.equipes.lista) st.nomesAntigos[e.id] = e.nome;
     const foto = resumirEquipes(novas);
     const primeira = st.fotoEquipes === null;
@@ -708,16 +730,19 @@ export class Distribuidor {
       const pendentes = [];
       const pulse = await this.novoPulse(false, pendentes);
       try {
-        const alvo = (await pulse.listarEquipes()).filter((e) => config.equipes[e.id] && e.distribuicaoNativa === !ligado);
-        const trocadas = [], falhas = [];
+        // não filtra pelo estado atual: a listagem tem cache e pode estar velha; gravar o mesmo valor é inofensivo
+        const alvo = (await pulse.listarEquipes()).filter((e) => config.equipes[e.id]);
+        const trocadas = [], falhas = [], feitas = [];
         for (const e of alvo) {
           try {
             await pulse.configurarEquipe(e.id, { distribuicaoNativa: !ligado });
             trocadas.push(e.nome);
+            feitas.push([e.id, !ligado]);
           } catch (err) {
             falhas.push(`${e.nome}: ${msg(err)}`);
           }
         }
+        await this.forcarNativa(feitas);
         if (trocadas.length) {
           await this.log.info('gestao_equipe', `${ator} ${ligado ? 'desligou' : 'religou'} a distribuição do próprio Pulse Direct em ${trocadas.length} equipe(s): ${trocadas.join(', ')}.`);
         }
@@ -774,6 +799,7 @@ export class Distribuidor {
       if (typeof distribuicaoNativa === 'boolean' && distribuicaoNativa !== equipe.distribuicaoNativa) mudancas.distribuicaoNativa = distribuicaoNativa;
       if (Object.keys(mudancas).length) {
         await pulse.configurarEquipe(equipeId, mudancas);
+        if ('distribuicaoNativa' in mudancas) await this.forcarNativa([[equipeId, mudancas.distribuicaoNativa]]);
         const partes = [];
         if (mudancas.nome) partes.push(`renomeou para "${mudancas.nome}"`);
         if ('distribuicaoNativa' in mudancas) partes.push(`${mudancas.distribuicaoNativa ? 'ligou' : 'desligou'} a distribuição do próprio Pulse Direct`);
