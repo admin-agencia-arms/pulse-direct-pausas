@@ -28,6 +28,12 @@ export class AtribuicaoBloqueada extends Error {
   }
 }
 
+export class DevolucaoBloqueada extends Error {
+  constructor() {
+    super('Devolução à fila bloqueada: só a equalização confirmada por um administrador pode devolver conversas.');
+  }
+}
+
 /** Janela deslizante de 5 min + intervalo mínimo entre chamadas + pausa ao levar 429. */
 export class Limitador {
   constructor(orcamento5min, intervaloMinMs = 250, agora = Date.now, dormir = (ms) => new Promise((r) => setTimeout(r, ms))) {
@@ -103,11 +109,12 @@ export function enderecosPulse(env = process.env) {
 }
 
 export class ClientePulse {
-  constructor({ token, core, chat, limitador, permitirAtribuir = false, fetch: f, aoChamar, aoLimite, timeoutMs = 20_000 }) {
+  constructor({ token, core, chat, limitador, permitirAtribuir = false, permitirDevolver = false, fetch: f, aoChamar, aoLimite, timeoutMs = 20_000 }) {
     this.token = token;
     this.bases = { core, chat };
     this.limitador = limitador;
     this.permitirAtribuir = permitirAtribuir;
+    this.permitirDevolver = permitirDevolver;
     this.fetch = f ?? fetch;
     this.aoChamar = aoChamar ?? (() => {});
     this.aoLimite = aoLimite ?? (() => {});
@@ -204,6 +211,8 @@ export class ClientePulse {
       email: a.email ?? null,
       disponivel: a.availability === 'AVAILABLE',
       equipes: (a.departments ?? []).filter((d) => d.isAgent).map((d) => d.departmentId),
+      // última alteração do cadastro (inclui a disponibilidade): para quem está offline, aproxima "offline desde"
+      alteradoEm: lerData(a.updatedAt),
     }));
   }
 
@@ -283,6 +292,13 @@ export class ClientePulse {
   async atribuir(conversaId, userId) {
     if (!this.permitirAtribuir) throw new AtribuicaoBloqueada();
     const r = await this.chamar('PUT', 'chat', `/v1/session/${encodeURIComponent(conversaId)}/assignee`, [], { userId });
+    return r?.id ? conversa(r) : null;
+  }
+
+  /** Equalização: devolve a conversa para a fila da equipe (transferência para a própria equipe, sem atendente). Nunca repetida. */
+  async devolverParaFila(conversaId, equipeId) {
+    if (!this.permitirDevolver) throw new DevolucaoBloqueada();
+    const r = await this.chamar('PUT', 'chat', `/v1/session/${encodeURIComponent(conversaId)}/transfer`, [], { type: 'DEPARTMENT', newDepartmentId: equipeId });
     return r?.id ? conversa(r) : null;
   }
 

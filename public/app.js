@@ -838,6 +838,7 @@ async function viewDistribuicao(page) {
     <div class="page-head"><div><h1>Distribuição automática</h1>
       <p>Cada atendente com até <b id="d-teto">15</b> conversas abertas, puxando da fila das equipes dele.</p></div>
       <div class="d-head-actions"><span class="small muted" id="d-atualizado"></span>
+        <button class="btn" id="d-equalizar">Equalizar</button>
         <button class="btn" id="d-config">Configurações</button>
         <button class="btn" id="d-refresh">⟳ Atualizar</button></div></div>
     <div id="d-status"></div>
@@ -1263,6 +1264,63 @@ async function viewDistribuicao(page) {
     };
   };
 
+  // ---- equalização: devolver à fila o que está preso (prévia antes de qualquer mudança) ----
+  const equalizarModal = async () => {
+    const m = modal('<div class="boot" style="min-height:200px"><div class="spinner"></div></div>', { wide: true });
+    let plano;
+    try { plano = await api('/admin/distribuicao/equalizar'); } catch (err) { m.close(); toast(err.message, 'error'); return; }
+    const fora = new Set(); // atendentes desmarcados
+    const motivoTxt = (g) => (g.motivo === 'offline' ? `offline há ${g.offlineHoras} h`
+      : g.motivo === 'removido' ? 'usuário removido do Pulse Direct' : `${g.abertas} abertas (teto ${plano.teto})`);
+    const escolhidas = () => plano.grupos.filter((g) => !fora.has(g.userId)).flatMap((g) => g.conversas.map((c) => c.conversaId));
+    const ignoradas = plano.ignoradas.reduce((acc, i) => ({ ...acc, [i.detalhe]: (acc[i.detalhe] ?? 0) + 1 }), {});
+    const desenhar = () => {
+      const n = escolhidas().length;
+      m.el.innerHTML = `
+        <div class="modal-head"><div><h2>Equalizar conversas</h2><p class="muted small" style="margin:4px 0 0">Devolve à fila da equipe as conversas <b>pendentes</b> presas com quem está acima do teto (${plano.teto}) ou offline há mais de ${plano.horasOffline} h. Conversas em atendimento nunca saem. Depois a distribuição entrega de novo, a mais antiga primeiro, para quem estiver online com vaga.</p></div><button class="btn ghost sm" data-x>✕</button></div>
+        ${plano.grupos.length ? `<div class="table-wrap" style="max-height:52vh"><table>
+          <thead><tr><th></th><th>Atendente</th><th>Motivo</th><th class="right">Abertas</th><th class="right">Voltam à fila</th><th>Equipes</th></tr></thead>
+          <tbody>${plano.grupos.map((g) => `<tr>
+            <td><input type="checkbox" data-u="${esc(g.userId)}" ${fora.has(g.userId) ? '' : 'checked'}></td>
+            <td><b>${esc(titleCase(g.atendente))}</b></td>
+            <td><span class="pill ${g.motivo === 'acima_do_teto' ? 'pause' : 'offline'}">${esc(motivoTxt(g))}</span></td>
+            <td class="right num">${g.abertas}</td>
+            <td class="right num"><b>${g.conversas.length}</b></td>
+            <td>${[...new Set(g.conversas.map((c) => c.equipe))].map((e) => `<span class="tag">${esc(e)}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div>`
+          : '<div class="empty">Nada para equalizar agora.</div>'}
+        ${Object.keys(ignoradas).length ? `<p class="hint" style="margin-top:12px">Ficam como estão: ${Object.entries(ignoradas).map(([d, k]) => `${k} (${esc(d)})`).join(' · ')}.</p>` : ''}
+        <div class="modal-foot"><span class="small muted" style="margin-right:auto">${n} conversa(s) selecionada(s)</span>
+          <button class="btn" data-x>Cancelar</button>
+          <button class="btn" id="eq-teste" ${n ? '' : 'disabled'}>Testar com 1 conversa</button>
+          <button class="btn primary" id="eq-tudo" ${n ? '' : 'disabled'}>Devolver ${Math.min(n, 100)} à fila</button></div>`;
+      m.el.querySelectorAll('[data-x]').forEach((b) => (b.onclick = m.close));
+      m.el.querySelectorAll('[data-u]').forEach((b) => b.addEventListener('change', () => { if (b.checked) fora.delete(b.dataset.u); else fora.add(b.dataset.u); desenhar(); }));
+      const rodar = async (btn, ids, titulo, texto) => {
+        if (!(await confirmDialog(titulo, texto, 'Confirmar'))) return;
+        try {
+          const r = await busy(btn, () => api('/admin/distribuicao/equalizar', { method: 'POST', body: { ids } }));
+          const partes = [`${r.feitas} devolvida(s) à fila`];
+          if (r.mudaram) partes.push(`${r.mudaram} mudaram antes e ficaram como estavam`);
+          if (r.falhas?.length) partes.push(`${r.falhas.length} falharam`);
+          toast(`${partes.join(' · ')}${r.parou ? `. ${r.parou}` : ''}`, r.parou || r.falhas?.length ? 'error' : 'ok');
+          m.close();
+          await load();
+        } catch (err) { toast(err.message, 'error'); }
+      };
+      m.el.querySelector('#eq-teste')?.addEventListener('click', (e) => {
+        const g = plano.grupos.find((x) => !fora.has(x.userId));
+        rodar(e.currentTarget, [g.conversas[0].conversaId], 'Testar com 1 conversa',
+          `A conversa pendente mais antiga de <b>${esc(titleCase(g.atendente))}</b> (${esc(g.conversas[0].equipe)}) volta para a fila da equipe. Confira depois no Pulse Direct se ela ficou na fila, sem atendente. Para testar com outra pessoa, desmarque as de cima.`);
+      });
+      m.el.querySelector('#eq-tudo')?.addEventListener('click', (e) => {
+        const ids = escolhidas();
+        rodar(e.currentTarget, ids.slice(0, 100), `Devolver ${Math.min(ids.length, 100)} conversa(s) à fila?`,
+          `Cada uma é conferida no Pulse Direct antes (continua pendente, com o mesmo atendente e na mesma equipe). Se o Pulse Direct não tirar o atendente, para na primeira.${ids.length > 100 ? ' Vão as primeiras 100; rode de novo para o resto.' : ''}`);
+      });
+    };
+    desenhar();
+  };
+
   const load = async () => {
     try {
       data = await api('/admin/distribuicao');
@@ -1279,6 +1337,7 @@ async function viewDistribuicao(page) {
     try { await busy(e.currentTarget, async () => { await api('/admin/distribuicao/atualizar', { method: 'POST' }); await load(); }); } catch (err) { toast(err.message, 'error'); }
   };
   page.querySelector('#d-config').onclick = () => data && configModal();
+  page.querySelector('#d-equalizar').onclick = () => equalizarModal();
 
   await load();
   setPoll(() => load().catch(() => {}), 20000);

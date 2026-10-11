@@ -28,11 +28,11 @@ let preparo = null;
 export function criarDistribuidor({ banco = sql, fetch: f, env = process.env, saidaLog, agora, intervaloMinMs = 250, relogioLimitador, dormir } = {}) {
   const estado = criarEstado(banco);
   const log = new Registro(estado, { saida: saidaLog, agora });
-  const criarPulse = ({ permitirAtribuir, aoChamar, aoLimite, instantes }) => {
+  const criarPulse = ({ permitirAtribuir, permitirDevolver = false, aoChamar, aoLimite, instantes }) => {
     const { core, chat } = enderecosPulse(env);
     const limitador = new Limitador(Number(env.DISTRIBUICAO_ORCAMENTO_5MIN || ORCAMENTO_5MIN), intervaloMinMs, relogioLimitador, dormir);
     limitador.semear(instantes);
-    return new ClientePulse({ token: env.PULSE_API_TOKEN || '', core, chat, limitador, permitirAtribuir, fetch: f, aoChamar, aoLimite });
+    return new ClientePulse({ token: env.PULSE_API_TOKEN || '', core, chat, limitador, permitirAtribuir, permitirDevolver, fetch: f, aoChamar, aoLimite });
   };
   return new Distribuidor({ estado, criarPulse, log, agora, dormir, orcamento5min: Number(env.DISTRIBUICAO_ORCAMENTO_5MIN || ORCAMENTO_5MIN) });
 }
@@ -137,6 +137,17 @@ const CATEGORIA = (tipo) => (tipo.startsWith('atendente') || tipo.startsWith('eq
 
 function decisaoComoItem(d) {
   const conversa = String(d.conversaId).slice(0, 8);
+  if (d.modo === 'equalizacao') {
+    const t = {
+      devolvido: `Equalização: conversa ${conversa} de ${d.equipe} devolvida à fila (estava com ${d.atendente}: ${d.detalhe ?? ''}).`,
+      ignorado: `Equalização: conversa ${conversa} de ${d.equipe} ficou com ${d.atendente}: ${d.detalhe ?? ''}`,
+      erro: `Equalização: falha ao devolver a conversa ${conversa} de ${d.equipe} (com ${d.atendente}): ${d.detalhe ?? ''}`,
+    };
+    return {
+      em: Number(d.em), nivel: d.resultado === 'erro' ? 'erro' : d.resultado === 'ignorado' ? 'aviso' : 'info',
+      tipo: `equalizacao_${d.resultado}`, categoria: 'decisoes', mensagem: t[d.resultado] ?? `${d.resultado}: ${conversa}`,
+    };
+  }
   const textos = {
     simulado: `Simulação: mandaria a conversa ${conversa} de ${d.equipe} para ${d.atendente} (tinha ${d.cargaAntes}).`,
     atribuido: `Conversa ${conversa} de ${d.equipe} entregue a ${d.atendente} (tinha ${d.cargaAntes}).`,
@@ -229,6 +240,22 @@ rotasAdmin.put('/equipes/:id/membros', wrap(async (req, res) => {
   await audit(req.user.id, null, 'distribuicao_membros_equipe', { equipeId: req.params.id, adicionar, remover, falhas: r.falhas });
   await cicloAposMudanca(d);
   if (r.falhas.length && !r.feitas) return res.status(502).json({ error: `Não deu para mudar os membros: ${r.falhas.join('; ')}` });
+  res.json({ ok: true, ...r });
+}));
+
+// Equalização: prévia (não mexe em nada) e execução das conversas confirmadas
+rotasAdmin.get('/equalizar', wrap(async (req, res) => {
+  res.json(await distribuidor().planoEqualizacao());
+}));
+
+rotasAdmin.post('/equalizar', wrap(async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids.map(String).filter(Boolean))] : [];
+  if (!ids.length) return res.status(400).json({ error: 'Nenhuma conversa escolhida.' });
+  if (ids.length > 100) return res.status(400).json({ error: 'No máximo 100 conversas por vez.' });
+  const d = distribuidor();
+  const r = await d.executarEqualizacao(ids, nomeAtor(req.user)).catch((e) => { throw legivel(e); });
+  await audit(req.user.id, null, 'distribuicao_equalizar', { pedidas: ids.length, feitas: r.feitas, mudaram: r.mudaram, falhas: r.falhas.length, parou: r.parou });
+  await cicloAposMudanca(d);
   res.json({ ok: true, ...r });
 }));
 
