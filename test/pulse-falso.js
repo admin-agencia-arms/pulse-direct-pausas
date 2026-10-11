@@ -17,7 +17,8 @@ export class PulseFalso {
     this.conversas = new Map();
     this.assinaturas = [];
     this.transferencias = [];
-    this.transferenciaMantemDono = false;
+    this.parciais = [];
+    this.parcialIgnoraUserId = false;
     this.pedidos = [];
     this.puts = [];
     this.violacoes = [];
@@ -45,13 +46,27 @@ export class PulseFalso {
     this.agentes.set(userId, { userId, nome, email: `${userId}@teste.com`, disponivel, equipes: [...equipes], alteradoEm });
   }
 
-  /** Transferência para equipe: sai do atendente e volta à fila (ou, simulando um Pulse diferente, mantém o dono). */
+  /** Transferência para equipe: como no Pulse Direct de verdade (testado), MANTÉM o atendente. */
   transferir(conversaId, corpo) {
     const c = this.conversas.get(conversaId);
     this.transferencias.push({ conversaId, ...corpo });
     if (!c) return [404, { error: true, text: 'Conversa não encontrada' }];
     if (corpo?.type !== 'DEPARTMENT' || !this.equipes.has(corpo.newDepartmentId)) return [400, { error: true, text: 'Transferência inválida' }];
-    this.mudar(c, { departmentId: corpo.newDepartmentId, ...(this.transferenciaMantemDono ? {} : { userId: null }), status: 'PENDING' });
+    this.mudar(c, { departmentId: corpo.newDepartmentId });
+    return [200, this.dto(c)];
+  }
+
+  /** Alteração parcial (só os campos listados em `fields`). parcialIgnoraUserId simula um Pulse que não tira o atendente. */
+  alterarParcial(conversaId, corpo) {
+    const c = this.conversas.get(conversaId);
+    this.parciais.push({ conversaId, ...corpo });
+    if (!c) return [404, { error: true, text: 'Conversa não encontrada' }];
+    const campos = corpo?.fields ?? [];
+    const mudancas = {};
+    if (campos.includes('UserId') && !this.parcialIgnoraUserId) mudancas.userId = corpo.userId ?? null;
+    if (campos.includes('DepartmentId')) mudancas.departmentId = corpo.departmentId ?? null;
+    if (campos.includes('Status')) mudancas.status = corpo.status;
+    this.mudar(c, mudancas);
     return [200, this.dto(c)];
   }
 
@@ -216,6 +231,11 @@ export class PulseFalso {
       const transferencia = /^\/chat\/v1\/session\/([^/]+)\/transfer$/.exec(p);
       if (req.method === 'PUT' && transferencia) {
         const [status, r] = this.transferir(transferencia[1], await this.corpo(req));
+        return responder(status, r);
+      }
+      const parcial = /^\/chat\/v2\/session\/([^/]+)\/partial$/.exec(p);
+      if (req.method === 'PUT' && parcial) {
+        const [status, r] = this.alterarParcial(parcial[1], await this.corpo(req));
         return responder(status, r);
       }
       responder(404, { error: true, text: `rota falsa inexistente: ${req.method} ${p}` });
