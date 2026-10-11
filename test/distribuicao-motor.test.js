@@ -194,6 +194,50 @@ caso('ligar/desligar e configurações ficam salvas e registradas, com validaç�
   }
 });
 
+caso('ligar assume as equipes incluídas (desliga a do Pulse) e desligar devolve (religa)', async () => {
+  const c = await cenario({ configurar: base });
+  try {
+    c.pulse.equipes.get('A').distribuicao = true;
+    c.pulse.equipes.get('B').distribuicao = true;
+    await c.config({ equipes: { A: true } });
+    const r = await c.d.ligar(true, 'Admin', { trocarPulse: true });
+    assert.deepEqual(r.trocadas, ['Exames']);
+    assert.equal(c.pulse.equipes.get('A').distribuicao, false, 'incluída: o sistema assume');
+    assert.equal(c.pulse.equipes.get('B').distribuicao, true, 'não incluída: ninguém mexe');
+    await c.d.ligar(false, 'Admin', { trocarPulse: true });
+    assert.equal(c.pulse.equipes.get('A').distribuicao, true, 'desligar devolve ao Pulse Direct');
+    assert.equal((await c.d.lerConfig()).ligado, false);
+  } finally {
+    await c.fechar();
+  }
+});
+
+caso('listagem de equipes do Pulse em cache: vale o que o sistema acabou de gravar', async () => {
+  const c = await cenario({ configurar: base });
+  try {
+    c.pulse.equipes.get('A').distribuicao = true;
+    await c.config({ ligado: true });
+    await c.d.configurarEquipe('A', { distribuicaoNativa: false, incluir: true }, 'Admin');
+    c.pulse.equipes.get('A').distribuicao = true; // a listagem ainda devolve o valor antigo
+    await c.d.ciclo({ origem: 'manual' });
+    assert.ok(c.pulse.puts.length > 0, 'distribuiu mesmo com a listagem atrasada');
+    assert.deepEqual(c.pulse.violacoes, []);
+  } finally {
+    await c.fechar();
+  }
+});
+
+caso('equipe com fila e sem ninguém distribuindo vira aviso', async () => {
+  const c = await cenario({ configurar: base });
+  try {
+    await c.config({ ligado: true });
+    await c.d.ciclo({ origem: 'manual' });
+    assert.ok((await c.d.painel()).avisos.some((a) => /Ninguém distribui Exames \(8 na fila\)/.test(a)));
+  } finally {
+    await c.fechar();
+  }
+});
+
 // ---------- gatilhos, trava e leitura ----------
 
 caso('ciclos não se sobrepõem e, exceto o manual, respeitam o intervalo mínimo', async () => {

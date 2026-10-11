@@ -28,7 +28,9 @@ const MAX_AUSENTES = 40;
 /** Intervalo mínimo entre ciclos, mesmo com enxurrada de eventos. */
 export const CICLO_MINIMO_MS = 10_000;
 const TRAVA_MS = 60_000;
-const CUSTO_POR_ATRIBUICAO = 3; // conferir conversa + contar abertas + atribuir
+const CUSTO_POR_ATRIBUICAO = 3; // conferir conversa + contar abertas (só perto do teto) + atribuir
+/** Abaixo de (teto - isto) abertas no espelho, a entrega não reconta no Pulse Direct (economiza 1 requisição). */
+const MARGEM_SEM_CONTAGEM = 6;
 const RESERVA_REQ = 20;
 /** Um lote de entregas não passa disso; o resto fica para o próximo ciclo (que relê tudo). */
 const LOTE_MAX_MS = 15_000;
@@ -641,8 +643,16 @@ export class Distribuidor {
           await ignorar('A conversa mudou antes da entrega (ganhou dono, mudou de status ou de equipe).');
           continue;
         }
-        const abertas = await pulse.contarAbertas(d.userId);
-        this.corrigirCarga(st, d.userId, abertas, await cargaEspelho(d.userId));
+        // Contagem exata no Pulse Direct (1 requisição) só perto do teto. Longe dele, o espelho basta:
+        // ele é relido a cada ciclo, só erra para cima (conversa encerrada que ainda não saiu) e, para
+        // passar do teto, o atendente teria que ganhar MARGEM_SEM_CONTAGEM conversas por fora em segundos.
+        const espelho = await cargaEspelho(d.userId);
+        const piso = st.correcoes[d.userId]?.ate > this.agora() ? st.correcoes[d.userId].n : 0;
+        let abertas = Math.max(espelho, piso);
+        if (abertas + MARGEM_SEM_CONTAGEM >= st.config.teto) {
+          abertas = await pulse.contarAbertas(d.userId);
+          this.corrigirCarga(st, d.userId, abertas, espelho);
+        }
         if (abertas >= st.config.teto) {
           await ignorar(`Na conferência o atendente já tinha ${abertas} abertas.`);
           continue;
